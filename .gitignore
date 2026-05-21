@@ -7,3 +7,4 @@ expense_tracker.db
 .ruff_cache/
 *.egg-info/
 .coverage
+.claude/
