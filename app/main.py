@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal, cast
 
 from fastapi import Depends, FastAPI, HTTPException
-from sqlalchemy import select
+from sqlalchemy import distinct, select
 from sqlalchemy.orm import Session
 
 from app import models as _models  # noqa: F401  # registers Expense with Base before create_all
 from app.db import Base, engine, get_db
 from app.insights import generate_category_insight, generate_monthly_insight
 from app.llm import LLMClient, LLMError, get_llm_client
+from app.ml.categorizer import DEFAULT_PROTOTYPES, suggest_category, train_categorizer
 from app.models import Expense
 from app.parser import parse_expense_text
 from app.schemas import (
+    CategorizerTrainResponse,
+    CategorySuggestionResponse,
     CategoryTotal,
     ExpenseCreate,
     ExpenseRead,
@@ -157,3 +161,45 @@ def category_insight_endpoint(
         return generate_category_insight(category, db, since=since, llm=llm)
     except LLMError as exc:
         raise HTTPException(status_code=503, detail=f"LLM unavailable: {exc}") from exc
+
+
+@app.post("/ml/categorize", response_model=CategorySuggestionResponse)
+def categorize_endpoint(
+    payload: TextInput,
+    db: Session = Depends(get_db),  # noqa: B008
+) -> CategorySuggestionResponse:
+    """Suggest a category for the given expense description.
+
+    Merges categories already present in the DB with the built-in default
+    prototypes so that user-defined categories are always considered.
+    """
+    db_categories = list(db.execute(select(distinct(Expense.category))).scalars().all())
+    prototypes = sorted(set(db_categories) | set(DEFAULT_PROTOTYPES))
+    result = suggest_category(payload.text, prototypes)
+    return CategorySuggestionResponse(
+        category=result.category,
+        score=result.score,
+        mode=cast(Literal["zero-shot", "trained"], result.mode),
+    )
+
+
+@app.post("/ml/train-categorizer", response_model=CategorizerTrainResponse)
+def train_categorizer_endpoint(
+    db: Session = Depends(get_db),  # noqa: B008
+) -> CategorizerTrainResponse:
+    """Fit a logistic-regression categorizer on all expenses in the DB.
+
+    Rows with empty or whitespace-only descriptions are excluded — they carry
+    no signal for the text-embedding classifier.  Returns a refusal response
+    when the data set is too small to produce a reliable model.
+    """
+    rows = db.execute(select(Expense.description, Expense.category)).all()
+    labeled = [(desc, cat) for desc, cat in rows if desc and desc.strip()]
+    result = train_categorizer(labeled)
+    return CategorizerTrainResponse(
+        status=cast(Literal["trained", "refused-insufficient-data"], result.status),
+        reason=result.reason,
+        n_examples=result.n_examples,
+        n_categories=result.n_categories,
+        metrics=result.metrics,
+    )
