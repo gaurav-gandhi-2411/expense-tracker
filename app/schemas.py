@@ -38,3 +38,22 @@ class MonthTotal(BaseModel):
 class CategoryTotal(BaseModel):
     category: str
     total: float
+
+
+class TextInput(BaseModel):
+    text: str = Field(..., min_length=1, max_length=500)
+
+
+class ParsedExpense(BaseModel):
+    amount: float = Field(..., gt=0)
+    category: str
+    description: str
+    occurred_at: date = Field(default_factory=date.today)
+    confidence: float = Field(..., ge=0.0, le=1.0)
+
+
+class Insight(BaseModel):
+    scope: str
+    narrative: str
+    stats: dict[str, float]
+    generated_at: datetime = Field(default_factory=datetime.now)
