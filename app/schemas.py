@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,3 +58,19 @@ class Insight(BaseModel):
     narrative: str
     stats: dict[str, float]
     generated_at: datetime = Field(default_factory=datetime.now)
+
+
+class CategorySuggestionResponse(BaseModel):
+    category: str
+    # cosine similarity in [-1, 1] for zero-shot; class probability in [0, 1] for trained.
+    # The wider bound [-1, 1] covers both modes without a conditional validator.
+    score: float = Field(..., ge=-1.0, le=1.0)
+    mode: Literal["zero-shot", "trained"]
+
+
+class CategorizerTrainResponse(BaseModel):
+    status: Literal["trained", "refused-insufficient-data"]
+    reason: str
+    n_examples: int = Field(..., ge=0)
+    n_categories: int = Field(..., ge=0)
+    metrics: dict[str, float] | None = None
