@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     llm_model: str = "llama-3.3-70b-versatile"
     llm_fallback_model: str = "llama-3.1-8b-instant"
 
+    embedding_model: str = "all-MiniLM-L6-v2"
+    min_train_per_category: int = 30
+    min_anomaly_samples: int = 20
+    min_forecast_months: int = 3
+    models_dir: str = "models"
+
 
 @functools.lru_cache
 def get_settings() -> Settings:

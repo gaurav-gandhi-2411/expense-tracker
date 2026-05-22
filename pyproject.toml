@@ -5,9 +5,13 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi",
     "groq",
+    "joblib",
+    "prophet",
     "pydantic>=2",
     "pydantic-settings",
     "python-dotenv",
+    "scikit-learn",
+    "sentence-transformers",
     "sqlalchemy>=2.0",
     "uvicorn[standard]",
 ]

@@ -9,3 +9,5 @@ expense_tracker.db
 .coverage
 .claude/
 .env
+models/
+*.joblib
