@@ -14,7 +14,9 @@ def get_embedding_model():  # type: ignore[return]
     Import is deferred inside the function so the heavy sentence-transformers
     module does not load at app import time, keeping FastAPI startup fast.
     """
-    from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]  # noqa: PLC0415
+    from sentence_transformers import (  # type: ignore[import-untyped]  # noqa: PLC0415
+        SentenceTransformer,
+    )
 
     model_name = get_settings().embedding_model
     return SentenceTransformer(model_name)
