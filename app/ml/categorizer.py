@@ -25,7 +25,7 @@ Dependency note:
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -35,21 +35,25 @@ from sklearn.linear_model import LogisticRegression  # type: ignore[import-untyp
 
 from app.config import get_settings
 from app.ml.embeddings import embed_texts
+from app.parser import extract_category
 
 # ---------------------------------------------------------------------------
 # Public constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_PROTOTYPES: list[str] = [
-    "food",
-    "transport",
-    "groceries",
-    "utilities",
-    "entertainment",
-    "health",
-    "rent",
-    "other",
-]
+# Maps category label → representative prototype text used for zero-shot embedding.
+# Brand keywords are included so Indian delivery/ride-hailing app names land in the
+# correct cluster even though all-MiniLM-L6-v2 was not trained on expense text.
+DEFAULT_PROTOTYPES: dict[str, str] = {
+    "food": "swiggy zomato dunzo restaurant cafe meal lunch dinner",
+    "transport": "ola uber rapido auto taxi metro bmtc cab fuel petrol",
+    "groceries": "bigbasket blinkit zepto instamart grocery supermarket",
+    "utilities": "electricity water gas internet wifi broadband bill recharge jio airtel",
+    "entertainment": "netflix prime hotstar spotify movies concert streaming",
+    "health": "medicine pharmacy hospital doctor clinic medical apollo",
+    "rent": "rent housing flat apartment monthly accommodation",
+    "other": "miscellaneous",
+}
 
 # ---------------------------------------------------------------------------
 # Internal cache — keyed by (absolute_path_str, mtime_float)
@@ -85,7 +89,8 @@ class CategorySuggestion:
 
     category: str
     score: float
-    mode: str  # "zero-shot" | "trained"
+    mode: str  # "zero-shot" | "trained" | "llm-fallback"
+    confidence_note: str | None = field(default=None)
 
 
 @dataclass
@@ -108,16 +113,20 @@ def suggest_category(text: str, prototypes: list[str]) -> CategorySuggestion:
     """Return the most likely category for *text*.
 
     Uses the trained classifier when ``models/categorizer.joblib`` exists;
-    otherwise falls back to zero-shot prototype matching.
+    otherwise falls back to zero-shot prototype matching.  When zero-shot
+    confidence is below ``categorizer_fallback_threshold``, an LLM call via
+    :func:`app.parser.extract_category` is attempted as a second opinion.
 
     Args:
         text:       Raw expense description to classify.
         prototypes: Candidate category labels (caller merges DB categories
                     with ``DEFAULT_PROTOTYPES`` before passing in).  When
-                    empty and in zero-shot mode, ``DEFAULT_PROTOTYPES`` is used.
+                    empty and in zero-shot mode, ``DEFAULT_PROTOTYPES`` keys
+                    are used as labels.
 
     Returns:
-        :class:`CategorySuggestion` with ``category``, ``score``, and ``mode``.
+        :class:`CategorySuggestion` with ``category``, ``score``, ``mode``,
+        and optionally ``confidence_note`` when LLM fallback fails.
     """
     # Edge-case: empty text — return a safe default without calling the model.
     if not text or not text.strip():
@@ -145,11 +154,14 @@ def suggest_category(text: str, prototypes: list[str]) -> CategorySuggestion:
     # ------------------------------------------------------------------
     # Zero-shot path
     # ------------------------------------------------------------------
-    labels = prototypes if prototypes else DEFAULT_PROTOTYPES
+    # Build (label, prototype_text) pairs.  For categories in DEFAULT_PROTOTYPES
+    # the rich brand-keyword text is used; DB-only categories fall back to the
+    # raw category name so they still participate in cosine comparison.
+    labels = prototypes if prototypes else list(DEFAULT_PROTOTYPES.keys())
+    prototype_texts = [DEFAULT_PROTOTYPES.get(lbl, lbl) for lbl in labels]
 
-    # Embed text + all prototypes in one batch for efficiency (single model
-    # call, same normalisation scale for the dot-product comparison).
-    all_texts = [text] + labels
+    # Embed text + all prototype texts in one batch for efficiency.
+    all_texts = [text] + prototype_texts
     all_embs = embed_texts(all_texts)  # shape (1 + len(labels), dim)
 
     text_emb = all_embs[0]  # shape (dim,)
@@ -157,9 +169,32 @@ def suggest_category(text: str, prototypes: list[str]) -> CategorySuggestion:
 
     similarities = label_embs @ text_emb  # dot product == cosine (L2-normed)
     idx = int(np.argmax(similarities))
+    best_score = float(similarities[idx])
+    best_label = labels[idx]
+
+    # ------------------------------------------------------------------
+    # LLM fallback — triggered when zero-shot confidence is too low
+    # ------------------------------------------------------------------
+    threshold = get_settings().categorizer_fallback_threshold
+    if best_score < threshold:
+        try:
+            llm_category = extract_category(text)
+            return CategorySuggestion(
+                category=llm_category,
+                score=best_score,
+                mode="llm-fallback",
+            )
+        except Exception:  # noqa: BLE001
+            return CategorySuggestion(
+                category=best_label,
+                score=best_score,
+                mode="zero-shot",
+                confidence_note="LLM fallback attempted and failed; returning zero-shot result",
+            )
+
     return CategorySuggestion(
-        category=labels[idx],
-        score=float(similarities[idx]),
+        category=best_label,
+        score=best_score,
         mode="zero-shot",
     )
 

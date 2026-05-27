@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 
 import pydantic
@@ -74,3 +75,43 @@ def parse_expense_text(text: str, *, llm: LLMClient | None = None) -> ParsedExpe
             attempts=["parse"],
             cause=val_err,
         ) from val_err
+
+
+_CATEGORY_SYSTEM_PROMPT = (
+    "You are an expense categoriser. Given a freeform expense note, respond with ONLY the "
+    "single best-fit category as one lowercase word. No punctuation, no explanation.\n"
+    "\n"
+    "Choose from: food, transport, groceries, utilities, entertainment, health, rent, other.\n"
+    "If none fit well, respond with: other"
+)
+
+
+def extract_category(text: str, *, llm: LLMClient | None = None) -> str:
+    """Return the best-fit expense category for *text* as a single lowercase word.
+
+    Calls the LLM with a lightweight single-purpose prompt. The returned string
+    is lowercased and stripped of surrounding whitespace and punctuation, but is
+    NOT remapped to "other" when the model returns an out-of-vocabulary token —
+    that decision belongs to the caller.
+
+    Args:
+        text: Freeform expense note, e.g. "uber to office 240".
+        llm:  Optional pre-constructed LLMClient; a default instance is created
+              when None.
+
+    Returns:
+        Cleaned category string (lowercase, no surrounding punctuation/whitespace).
+
+    Raises:
+        LLMError: Propagated from LLMClient.chat() if all retry/fallback attempts fail.
+    """
+    if llm is None:
+        llm = LLMClient()
+
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": _CATEGORY_SYSTEM_PROMPT},
+        {"role": "user", "content": text},
+    ]
+
+    raw = llm.chat(messages, json_mode=False, temperature=0.0)
+    return re.sub(r"[^\w]", "", raw.strip().lower())

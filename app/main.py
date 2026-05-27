@@ -184,7 +184,8 @@ def categorize_endpoint(
     return CategorySuggestionResponse(
         category=result.category,
         score=result.score,
-        mode=cast(Literal["zero-shot", "trained"], result.mode),
+        mode=cast(Literal["zero-shot", "trained", "llm-fallback"], result.mode),
+        confidence_note=result.confidence_note,
     )
 
 

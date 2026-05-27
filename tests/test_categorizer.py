@@ -1,8 +1,10 @@
-"""Tests for app.ml.categorizer — zero-shot and trained paths.
+"""Tests for app.ml.categorizer — zero-shot, trained, and LLM-fallback paths.
 
 All tests mock ``app.ml.categorizer.embed_texts`` so no real SentenceTransformer
 is ever instantiated.  Tests that exercise the trained path also mock
 ``app.ml.categorizer.joblib.load`` to avoid touching the real filesystem.
+LLM-fallback tests mock ``app.ml.categorizer.extract_category`` so no real
+API call is ever made.
 """
 
 from __future__ import annotations
@@ -28,12 +30,13 @@ from app.ml.categorizer import (
 _NONEXISTENT = Path("/nonexistent/categorizer.joblib")
 
 
-def _make_settings_mock(tmp_path: Path) -> MagicMock:
+def _make_settings_mock(tmp_path: Path, fallback_threshold: float = 0.30) -> MagicMock:
     """Return a mock that looks like Settings with models_dir == tmp_path."""
     mock_settings = MagicMock()
     mock_settings.models_dir = str(tmp_path)
     mock_settings.min_train_per_category = 30
     mock_settings.embedding_model = "all-MiniLM-L6-v2"
+    mock_settings.categorizer_fallback_threshold = fallback_threshold
     return mock_settings
 
 
@@ -333,3 +336,77 @@ class TestTrainCategorizer:
         assert result.metrics is None
         mock_embed.assert_not_called()
         assert not (tmp_path / "categorizer.joblib").exists()
+
+
+# ---------------------------------------------------------------------------
+# LLM-fallback tests
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestCategoryLLMFallback:
+    def test_suggest_category_uses_llm_fallback_below_threshold(
+        self, mocker: MagicMock, tmp_path: Path
+    ) -> None:
+        """When zero-shot best_score < threshold, LLM fallback is called and its
+        category is returned with mode='llm-fallback'."""
+        # All embeddings identical → every cosine similarity == 1.0 except we
+        # manufacture a low score by making text orthogonal to all prototypes.
+        # text_emb: [0, 0, 1]
+        # all prototypes: [1, 0, 0]  → similarity == 0.0 < 0.30
+        n_prototypes = 3  # food, transport, groceries
+        prototype_emb = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        text_emb = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        rows = np.vstack([text_emb] + [prototype_emb] * n_prototypes)
+
+        mocker.patch("app.ml.categorizer.embed_texts", return_value=rows)
+        mocker.patch("app.ml.categorizer._model_path", return_value=_NONEXISTENT)
+        mocker.patch(
+            "app.ml.categorizer.get_settings",
+            return_value=_make_settings_mock(tmp_path, fallback_threshold=0.30),
+        )
+        mocker.patch("app.ml.categorizer.extract_category", return_value="food")
+        _clear_trained_cache()
+
+        result = suggest_category("swiggy order 480", ["food", "transport", "groceries"])
+
+        assert result.category == "food"
+        assert result.mode == "llm-fallback"
+
+    def test_suggest_category_llm_fallback_failure_returns_zero_shot_with_note(
+        self, mocker: MagicMock, tmp_path: Path
+    ) -> None:
+        """When LLM fallback raises, the zero-shot result is returned with a
+        non-empty confidence_note and mode='zero-shot'."""
+        n_prototypes = 3
+        prototype_emb = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        text_emb = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        rows = np.vstack([text_emb] + [prototype_emb] * n_prototypes)
+
+        mocker.patch("app.ml.categorizer.embed_texts", return_value=rows)
+        mocker.patch("app.ml.categorizer._model_path", return_value=_NONEXISTENT)
+        mocker.patch(
+            "app.ml.categorizer.get_settings",
+            return_value=_make_settings_mock(tmp_path, fallback_threshold=0.30),
+        )
+        mocker.patch(
+            "app.ml.categorizer.extract_category",
+            side_effect=RuntimeError("rate limit"),
+        )
+        _clear_trained_cache()
+
+        result = suggest_category("swiggy order 480", ["food", "transport", "groceries"])
+
+        assert result.mode == "zero-shot"
+        assert result.confidence_note is not None
+        assert len(result.confidence_note) > 0
+        note_lower = result.confidence_note.lower()
+        assert "fallback" in note_lower or "failed" in note_lower
+        # Category must still be one of the provided prototypes (best zero-shot guess).
+        assert result.category in ["food", "transport", "groceries"]
+
+    def test_default_prototypes_contain_brand_keywords(self) -> None:
+        """DEFAULT_PROTOTYPES includes Indian brand keywords; 'subscription' is absent."""
+        assert "swiggy" in DEFAULT_PROTOTYPES["food"]
+        assert "uber" in DEFAULT_PROTOTYPES["transport"]
+        assert "netflix" in DEFAULT_PROTOTYPES["entertainment"]
+        assert "subscription" not in DEFAULT_PROTOTYPES

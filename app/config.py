@@ -20,9 +20,11 @@ class Settings(BaseSettings):
 
     embedding_model: str = "all-MiniLM-L6-v2"
     min_train_per_category: int = 30
-    min_anomaly_samples: int = 20
+    min_anomaly_samples: int = 50
     min_forecast_months: int = 3
     models_dir: str = "models"
+    # Zero-shot confidence below this score triggers LLM fallback in categorizer
+    categorizer_fallback_threshold: float = 0.30
 
 
 @functools.lru_cache

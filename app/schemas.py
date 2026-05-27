@@ -65,7 +65,9 @@ class CategorySuggestionResponse(BaseModel):
     # cosine similarity in [-1, 1] for zero-shot; class probability in [0, 1] for trained.
     # The wider bound [-1, 1] covers both modes without a conditional validator.
     score: float = Field(..., ge=-1.0, le=1.0)
-    mode: Literal["zero-shot", "trained"]
+    mode: Literal["zero-shot", "trained", "llm-fallback"]
+    # Populated only when LLM fallback was attempted but failed; None on all success paths.
+    confidence_note: str | None = None
 
 
 class CategorizerTrainResponse(BaseModel):
