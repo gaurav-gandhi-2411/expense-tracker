@@ -1,60 +1,99 @@
-# Project Spec: expense-tracker — Phase 2.5 (validation + cleanup)
+# Project Spec: expense-tracker — Phase 2.6 (ML quality pass)
 
 ## Goal
 
-Bounded validation + housekeeping iteration between Phase 2 (local ML) and Phase 3 (production deployment). Three deliverables: (1) run the manual ML eval and a live smoke test, capturing both outputs as artifacts; (2) silence the pytest-asyncio deprecation warning; (3) refresh CURRENT_STATE.md to reflect Phase 2 reality. No new features, no new endpoints, no architecture changes.
+Address the concrete ML quality issues surfaced by Phase 2.5's eval. Three targeted improvements driven by recorded observations: (1) expand zero-shot category prototypes to include common Indian brand keywords (Swiggy, Zomato, Ola, Rapido, etc.); (2) add an LLM-fallback path in the categorizer when zero-shot confidence is low; (3) tune anomaly detection to be less noisy and gate the endpoint below a minimum sample threshold. Re-run eval + smoke and document the before/after.
+
+NO new endpoints. NO new features. Tightly scoped quality work driven by data.
 
 ## Current state (read-only context)
-See CURRENT_STATE.md (post-Phase-1 version — known stale; this iteration refreshes it). Key facts:
-- Phases v0, 1, 2 are complete: 12 endpoints (8 v0 + 4 Phase 1) + 4 ML endpoints = 16 endpoints
-- 103/103 tests pass, ruff + mypy clean
-- Phase 2 added: app/ml/ package (embeddings, categorizer, anomaly, forecast), 4 new endpoints, 5 new test files, 5 new config values
-- Known cosmetic: pytest-asyncio emits a deprecation warning about `asyncio_default_fixture_loop_scope` being unset
+See CURRENT_STATE.md (post-Phase-2.5). Phase 2.5 eval recorded:
+- Categorizer 6/8 (75%) on curated cases — "uber to office" → rent (should be transport), "netflix" → entertainment (got "subscription" — prototype collision)
+- Live smoke: "swiggy order 480" → utilities at score 0.19 — out-of-vocabulary brand
+- Anomaly flag rate 42% on N=26 seeded data — too noisy to be useful
+- Prophet ran on 4 months (above 3-month threshold) — correct behavior, output not actionable yet
+
+This iteration fixes #1, #2, and #3. The Prophet thin-data limitation is data-bound, not addressable in code; left as-is.
+
+Load-bearing files (per CURRENT_STATE.md): app/db.py, app/models.py, tests/conftest.py, app/llm.py, app/config.py.
 
 ## Scope
 
-### In scope (Phase 2.5)
-- Silence the pytest-asyncio deprecation warning by adding `asyncio_default_fixture_loop_scope = "function"` to the `[tool.pytest.ini_options]` section of pyproject.toml
-- Create `eval-results/` directory (committed) for capturing eval/smoke artifacts
-- Run `python scripts/eval_ml.py` against the REAL embedding model; capture full stdout+stderr to `eval-results/phase2-eval-YYYYMMDD.txt`. If torch/model load fails, escalate with the error.
-- Run a live smoke test of the 4 ML endpoints against a locally-running uvicorn:
-  - `POST /ml/categorize` with text `"swiggy order 480"` — record response
-  - `GET /ml/anomalies?since=2026-01-01` — record response (may be empty; that's fine)
-  - `GET /ml/forecast?horizon=2` — record response (likely low-confidence-average mode; that's fine)
-  - `POST /ml/train-categorizer` — should refuse (below threshold); record refusal response
-  - Capture all four request/response pairs to `eval-results/phase2-smoke-YYYYMMDD.md` as a markdown report
-  - Server lifecycle: start uvicorn in background, run requests, stop uvicorn. Use the existing test client if a real-process smoke test is too fragile on Windows — escalate to ask if uncertain.
-- Refresh `CURRENT_STATE.md` to reflect Phase 2 reality:
-  - Updated directory tree (app/ml/, new test files, eval_ml.py)
-  - All 16 endpoints listed
-  - app/ml/* modules added to load-bearing list (categorizer + anomaly + forecast)
-  - Phase 2 design decisions added (zero-shot-first categorization, thin-data graceful degradation, lazy model loading)
-  - Updated test count (103) + lint/types status
-  - Updated phase plan (Phase 2 done; Phase 3 next, possibly split into 3a/3b)
-  - Add a "Phase 2 eval observations" section summarizing what the eval and smoke test revealed (categorization accuracy on the 8 test cases, any surprises)
-- Final commit: all of the above as small, conventionally-named commits
+### In scope (Phase 2.6)
+**Categorizer prototype expansion:**
+- Expand the built-in category prototype map in `app/ml/categorizer.py` so each category's prototype text includes representative brand keywords. Target categories and example expansions:
+  - `food`: include "swiggy zomato dunzo restaurant cafe meal lunch dinner"
+  - `transport`: include "ola uber rapido auto taxi metro bmtc cab fuel petrol"
+  - `groceries`: include "bigbasket blinkit zepto instamart grocery supermarket"
+  - `utilities`: include "electricity water gas internet wifi broadband bill recharge jio airtel"
+  - `entertainment`: include "netflix prime hotstar spotify movies concert streaming"
+  - `health`: include "medicine pharmacy hospital doctor clinic medical apollo"
+  - `rent`: include "rent housing flat apartment monthly accommodation"
+  - `other`: include "miscellaneous"
+- Remove "subscription" as a top-level category prototype if present — it was colliding with entertainment on netflix and similar
+- Prototypes are still embedded once at startup (no behavior change beyond the keyword set)
+
+**LLM fallback in categorizer:**
+- New function `extract_category(text: str) -> str` in `app/parser.py` — does a category-only LLM call using the existing Groq client. Lighter prompt than full `parse_expense_text`; returns just the category string.
+- Modify `suggest_category(text)` in `app/ml/categorizer.py`:
+  - Run zero-shot first as today
+  - If best score < `CATEGORIZER_FALLBACK_THRESHOLD` (new config, default 0.30), call `extract_category(text)` and return its result
+  - `CategorySuggestion.mode` gains a new value `"llm-fallback"` for this path
+  - If the LLM call fails (rate limit, etc.), return the zero-shot result with a `confidence_note` indicating fallback was attempted and failed
+
+**Anomaly tuning:**
+- Lower `IsolationForest(contamination=...)` default from 0.10 to 0.05 in `app/ml/anomaly.py`
+- Raise `MIN_ANOMALY_SAMPLES` default from 20 to 50 in `app/config.py`
+- The endpoint `GET /ml/anomalies` already returns empty + note below threshold (per Phase 2 spec) — no endpoint changes, just the threshold value
+
+**New tests:**
+- `tests/test_categorizer.py` — add: (a) LLM-fallback path with mocked LLM (assert mode = "llm-fallback"); (b) LLM-fallback failure path (assert graceful degradation to zero-shot result + note); (c) prototype-expansion sanity check (food prototype embedding now contains keyword "swiggy" — assert the constant string)
+- `tests/test_anomaly.py` — add: (a) below-threshold-50 returns empty + note (existing test was at N<20); (b) above-threshold N=60 still flags injected outlier
+- `tests/test_parser.py` — add tests for `extract_category` (mocked Groq client, 4-5 inputs from the original 8 eval cases)
+
+**Re-run eval + smoke (artifacts):**
+- Run `python scripts/eval_ml.py` against the updated categorizer. Capture to `eval-results/phase2-eval-v2-YYYYMMDD.txt`
+- Run live smoke of `POST /ml/categorize` for: `"swiggy order 480"`, `"uber to office 240"`, `"netflix 649"`. Capture to `eval-results/phase2-smoke-v2-YYYYMMDD.md`
+- For each result, the smoke report must show: input text, suggested category, score, mode (zero-shot or llm-fallback)
+- Brief side-by-side comparison vs Phase 2.5 results inside the smoke markdown file
+
+**CURRENT_STATE.md update:**
+- Update "Phase 2 eval observations" section into "Phase 2 eval observations (v1)" and add "Phase 2.6 eval observations (v2)" with the before/after comparison
+- Update test count
+- Note the LLM-fallback addition in design decisions
 
 ### Out of scope (do NOT do)
-- Any new features, endpoints, or ML models
-- Any changes to app/ml/* logic — only observe its behavior, don't modify
-- Phase 3 work (auth, frontend, deploy, Postgres, Alembic)
-- Fixing any categorization errors the eval reveals — RECORD them in CURRENT_STATE.md as observations, do not "improve" the prompts or prototypes
-- Caching, performance optimization, retries on smoke calls
-- Adding tests (we're just running existing ones, not writing new)
-- Cleaning up the dead `# noqa: B008` comments from v0 (separate small task, not this iteration)
+- Any Phase 3 work (auth, frontend, deploy, Postgres, Alembic)
+- Changing the embedding model (no swap from all-MiniLM-L6-v2)
+- Re-engineering anomaly or forecast beyond the two tunings specified
+- LLM response caching, retries beyond what app/llm.py already has
+- New endpoints
+- Touching app/llm.py public surface (load-bearing)
+- Improving category prototypes beyond the keyword expansion (no fancy multi-token mean pooling, no learned prototypes)
+- Cleaning up unrelated lint or noqa comments
 
 ## Tech stack additions
-None. This iteration uses only what's already installed.
+None. Uses existing Groq client (app/llm.py) via app/parser.py.
 
-## Architecture (additions only)
+## Architecture (modifications only)
 
 ```
 expense-tracker/
-├── eval-results/                          # NEW (committed)
-│   ├── phase2-eval-YYYYMMDD.txt           # NEW — eval_ml.py output
-│   └── phase2-smoke-YYYYMMDD.md           # NEW — live smoke test report
-├── pyproject.toml                          # MODIFIED — pytest-asyncio config
-└── CURRENT_STATE.md                       # REWRITTEN — reflect Phase 2
+├── app/
+│   ├── ml/
+│   │   ├── categorizer.py     # MODIFIED — expanded prototypes, LLM fallback wiring, new mode value
+│   │   └── anomaly.py         # MODIFIED — contamination 0.10 → 0.05
+│   ├── parser.py              # MODIFIED — new extract_category(text) function
+│   ├── schemas.py             # MODIFIED — CategorySuggestion.mode gains "llm-fallback" value; optional confidence_note field
+│   └── config.py              # MODIFIED — CATEGORIZER_FALLBACK_THRESHOLD (new), MIN_ANOMALY_SAMPLES (20 → 50)
+├── tests/
+│   ├── test_categorizer.py    # MODIFIED — 3 new tests
+│   ├── test_anomaly.py        # MODIFIED — 2 new tests
+│   └── test_parser.py         # MODIFIED — extract_category tests
+├── eval-results/
+│   ├── phase2-eval-v2-YYYYMMDD.txt   # NEW
+│   └── phase2-smoke-v2-YYYYMMDD.md   # NEW
+└── CURRENT_STATE.md           # MODIFIED — v2 observations section
 ```
 
 ## Verification commands
@@ -69,46 +108,52 @@ expense-tracker/
   cmd: mypy app
   required: false
 ```
-Run after the pyproject.toml change (verify the deprecation warning is gone in pytest output) and at the end.
 
 ## Subagent usage rules
-- `executor` for the pyproject.toml edit, eval/smoke runs, and CURRENT_STATE.md rewrite
-- `verifier` for the pytest/ruff/mypy verification
-- Orchestrator does NOT write content itself
+- `executor` for all code changes, eval/smoke runs, CURRENT_STATE.md update
+- `verifier` for tests/lint/types
+- Orchestrator does NOT write code
 
 ## Escalation rules (orchestrator must ask before doing)
-- Ask if torch/embedding model fails to load (could be missing torch install, internet issue for model download, etc.)
-- Ask if uvicorn fails to start cleanly for the smoke test
-- Ask if any of the 4 smoke-test calls returns an unexpected error (5xx, malformed JSON)
-- Ask before modifying anything outside the three files listed in "Architecture additions"
-- Ask if any existing test breaks (this iteration shouldn't touch app code — if a test breaks, something's wrong)
-- Ask if the smoke test reveals a behavior that contradicts the spec (e.g., train-categorizer succeeds when it should refuse)
+- Ask before modifying any load-bearing file (CURRENT_STATE.md list)
+- Ask if eval_ml.py output looks substantially WORSE than v1 — that means we broke something
+- Ask if any existing test from the 103 baseline starts failing
+- Ask if torch fails to load when running eval (network/model-cache issue)
+- Ask if uvicorn smoke test is fragile on Windows — fallback to TestClient is acceptable if discussed
+- Ask if the LLM-fallback path causes test flakiness or rate-limit errors during the live smoke
 
 ## Hard rules (do not violate)
-- Do NOT modify any file in app/ — this iteration observes Phase 2 code, doesn't change it
-- Do NOT modify any test file
+- Do NOT modify app/llm.py
+- Do NOT modify app/db.py, app/models.py, tests/conftest.py
 - Do NOT change any endpoint signature or behavior
-- Do NOT "fix" categorization errors the eval surfaces — record only
-- If the eval reveals broken behavior, STOP and escalate; don't paper over it
+- Do NOT remove or rename any file
+- Do NOT make real LLM calls inside pytest — mock the Groq client
+- Do NOT swap the embedding model
+- Do NOT touch Prophet or forecast code
 
 ## Budget
-- Soft target: 30-45 minutes
-- Hard cap: 6 executor invocations
-- This is a small iteration; if it's getting big, the spec is wrong, not the work
+- Soft target: 60-75 minutes
+- Hard cap: 10 executor invocations
+- Per-pass token budget: spec is tight enough that no single pass should exceed 25k
 
 ## Success criteria (orchestrator: verify ALL before declaring done)
-- pyproject.toml has `asyncio_default_fixture_loop_scope = "function"` and pytest no longer emits the deprecation warning
-- `eval-results/phase2-eval-YYYYMMDD.txt` exists, contains the full eval_ml.py output, and shows per-test-case results for the 8 categorization cases
-- `eval-results/phase2-smoke-YYYYMMDD.md` exists with the 4 endpoint request/response pairs, each clearly labeled
-- CURRENT_STATE.md is rewritten to reflect Phase 2 reality (16 endpoints, app/ml/ package, 103 tests, updated load-bearing list, design decisions, phase plan)
-- CURRENT_STATE.md has a new "Phase 2 eval observations" section with concrete observations from the eval + smoke artifacts
-- 103/103 tests still pass, ruff + mypy still clean
-- Final commit log shows small, conventionally-named commits — one per logical change
+- All 103 baseline tests still pass
+- 6 new tests added (3 categorizer, 2 anomaly, 1+ parser) — actual count may be slightly higher but ≥6
+- `pytest -v` reports 109+ tests, 0 fail
+- `ruff check .` clean, `mypy app` clean
+- New eval artifact at `eval-results/phase2-eval-v2-YYYYMMDD.txt` shows categorizer results on the 8 curated cases
+- New smoke artifact at `eval-results/phase2-smoke-v2-YYYYMMDD.md` shows the three live inputs (swiggy/uber/netflix) with category + score + mode for each, plus a before/after comparison vs v1
+- **Quantitative improvement targets** (not hard fails, but flag if missed):
+  - "uber to office 240" → transport (was rent)
+  - "netflix 649" → entertainment (was subscription)
+  - "swiggy order 480" → food (was utilities) — may require LLM fallback to land correctly; that's the design intent
+- CURRENT_STATE.md updated with v2 observations section + test count + design decisions
+- All commits trailer-free, conventionally named, one logical change per commit
 
 ## Build order
-1. pyproject.toml: add `asyncio_default_fixture_loop_scope = "function"` under `[tool.pytest.ini_options]`. Run pytest, confirm warning is gone, commit.
-2. Create eval-results/ directory (add a .gitkeep or README so it's tracked).
-3. Run `python scripts/eval_ml.py`, capture output to eval-results/phase2-eval-<today>.txt. Commit.
-4. Run live smoke test of 4 ML endpoints. Capture to eval-results/phase2-smoke-<today>.md. Commit.
-5. Rewrite CURRENT_STATE.md to reflect Phase 2 reality + add "Phase 2 eval observations" section drawing from the artifacts from steps 3-4. Commit.
-6. Final verification pass — all checks green, success criteria walkthrough.
+1. app/config.py: add CATEGORIZER_FALLBACK_THRESHOLD (default 0.30), bump MIN_ANOMALY_SAMPLES (20 → 50). Verify tests still pass.
+2. app/parser.py: add `extract_category(text: str) -> str` with mocked-LLM test. Verify.
+3. app/ml/anomaly.py: lower contamination to 0.05. Add test for new threshold gate. Verify.
+4. app/ml/categorizer.py: expand prototype keywords, remove "subscription" if present, add LLM-fallback wiring (read threshold from config, call extract_category, set mode). Update CategorySuggestion schema for new mode value + optional note. Add 3 new tests. Verify.
+5. Run eval + smoke against real model and live server. Capture artifacts to eval-results/. Commit.
+6. Update CURRENT_STATE.md with v2 observations (read artifact text; do not generalize). Final verification pass.
