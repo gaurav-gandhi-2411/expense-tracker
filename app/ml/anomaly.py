@@ -139,7 +139,7 @@ def detect_anomalies(expenses: list[ExpensePoint]) -> list[AnomalyFlag]:
     # --- fit and predict ---
     # contamination="auto" lets sklearn infer expected outlier fraction.
     # random_state=42 ensures deterministic results across identical inputs.
-    model = IsolationForest(contamination="auto", random_state=42)
+    model = IsolationForest(contamination=0.05, random_state=42)
     labels: np.ndarray = model.fit_predict(X)    # -1 = outlier, 1 = inlier
     raw_scores: np.ndarray = model.score_samples(X)  # lower == more anomalous
 

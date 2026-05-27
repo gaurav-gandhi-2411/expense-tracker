@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from app.ml.anomaly import ExpensePoint, _build_reason, detect_anomalies
 
 # ---------------------------------------------------------------------------
@@ -50,7 +52,7 @@ class TestDetectAnomaliesThreshold:
 class TestDetectAnomaliesOutlierDetection:
     def test_detect_anomalies_flags_obvious_outlier(self) -> None:
         """A 10 000-rupee 'food' expense amid a 100-200 band must be flagged."""
-        normal_points = _make_food_points(24, amount_start=100.0, amount_step=5.0)
+        normal_points = _make_food_points(49, amount_start=100.0, amount_step=5.0)
         outlier = ExpensePoint(
             id=999,
             amount=10_000.0,
@@ -77,7 +79,7 @@ class TestDetectAnomaliesOutlierDetection:
 
     def test_detect_anomalies_returns_flags_sorted_by_score_descending(self) -> None:
         """Returned flags must be sorted most-anomalous first."""
-        normal_points = _make_food_points(22, amount_start=100.0, amount_step=5.0)
+        normal_points = _make_food_points(48, amount_start=100.0, amount_step=5.0)
         mild_outlier = ExpensePoint(
             id=900, amount=800.0, category="food", occurred_at=date(2024, 2, 1)
         )
@@ -93,6 +95,42 @@ class TestDetectAnomaliesOutlierDetection:
             assert flags[i].score >= flags[i + 1].score, (
                 f"Score not descending at index {i}: {flags[i].score} < {flags[i+1].score}"
             )
+
+
+class TestDetectAnomaliesThresholdBoundary:
+    def test_detect_anomalies_below_threshold_returns_empty_with_note(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """N=30 (below min_anomaly_samples=50) must return [] and print the threshold note."""
+        points = _make_food_points(30)
+        result = detect_anomalies(points)
+        assert result == [], f"Expected empty list below threshold, got {result}"
+        captured = capsys.readouterr()
+        assert "threshold" in captured.out.lower() or "50" in captured.out, (
+            f"Expected threshold mention in stdout, got: {captured.out!r}"
+        )
+
+    def test_detect_anomalies_above_threshold_flags_injected_outlier(self) -> None:
+        """N=60 normal points + 1 extreme outlier — outlier must appear in flagged set."""
+        normal_points = _make_food_points(60, amount_start=100.0, amount_step=5.0)
+        outlier = ExpensePoint(
+            id=9999,
+            amount=50_000.0,
+            category="food",
+            occurred_at=date(2024, 6, 15),
+        )
+        points = normal_points + [outlier]
+
+        flags = detect_anomalies(points)
+
+        outlier_ids = {f.expense_id for f in flags}
+        assert outlier.id in outlier_ids, (
+            f"Outlier id={outlier.id} not in flagged ids {outlier_ids}"
+        )
+        outlier_flag = next(f for f in flags if f.expense_id == outlier.id)
+        assert outlier_flag.score > 0, (
+            f"score must be positive (negated IsolationForest score), got {outlier_flag.score}"
+        )
 
 
 class TestDetectAnomaliesReasonBranches:
