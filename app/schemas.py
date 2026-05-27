@@ -82,3 +82,17 @@ class AnomalyFlagResponse(BaseModel):
     category: str
     reason: str
     score: float
+
+
+class ForecastPointResponse(BaseModel):
+    month: str
+    predicted: float
+    lower: float
+    upper: float
+
+
+class ForecastResponse(BaseModel):
+    horizon_months: int = Field(..., ge=1)
+    points: list[ForecastPointResponse]
+    mode: Literal["prophet", "low-confidence-average"]
+    note: str

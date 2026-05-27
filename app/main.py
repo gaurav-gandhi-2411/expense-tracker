@@ -13,6 +13,7 @@ from app.insights import generate_category_insight, generate_monthly_insight
 from app.llm import LLMClient, LLMError, get_llm_client
 from app.ml.anomaly import ExpensePoint, detect_anomalies
 from app.ml.categorizer import DEFAULT_PROTOTYPES, suggest_category, train_categorizer
+from app.ml.forecast import forecast_spend
 from app.models import Expense
 from app.parser import parse_expense_text
 from app.schemas import (
@@ -23,6 +24,8 @@ from app.schemas import (
     ExpenseCreate,
     ExpenseRead,
     ExpenseUpdate,
+    ForecastPointResponse,
+    ForecastResponse,
     Insight,
     MonthTotal,
     ParsedExpense,
@@ -236,3 +239,33 @@ def anomalies_endpoint(
         )
         for f in flags
     ]
+
+
+@app.get("/ml/forecast", response_model=ForecastResponse)
+def forecast_endpoint(
+    horizon: int = 1,
+    db: Session = Depends(get_db),  # noqa: B008
+) -> ForecastResponse:
+    """Return a Prophet (or low-confidence-average) spend forecast for the requested horizon.
+
+    Aggregates the full monthly spend history from the DB via ``total_by_month``, then
+    delegates to :func:`app.ml.forecast.forecast_spend`.  Returns HTTP 400 when
+    ``horizon`` is less than 1.
+    """
+    monthly = total_by_month(db)
+    series = [(row.month, row.total) for row in monthly]
+    try:
+        result = forecast_spend(series, horizon_months=horizon)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ForecastResponse(
+        horizon_months=result.horizon_months,
+        points=[
+            ForecastPointResponse(
+                month=p.month, predicted=p.predicted, lower=p.lower, upper=p.upper
+            )
+            for p in result.points
+        ],
+        mode=cast(Literal["prophet", "low-confidence-average"], result.mode),
+        note=result.note,
+    )

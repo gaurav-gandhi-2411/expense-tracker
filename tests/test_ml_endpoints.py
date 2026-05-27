@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.ml.anomaly import AnomalyFlag, ExpensePoint
 from app.ml.categorizer import CategorySuggestion, TrainResult
+from app.ml.forecast import ForecastPoint, ForecastResult
 from app.models import Expense
 
 # ---------------------------------------------------------------------------
@@ -364,3 +365,177 @@ def test_anomalies_endpoint_passes_expense_points_with_expected_fields(
     assert p.amount == pytest.approx(75.5)
     assert p.category == "transport"
     assert str(p.occurred_at) == "2025-03-15"
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — forecast: prophet result is serialised correctly
+# ---------------------------------------------------------------------------
+
+
+def test_forecast_endpoint_returns_prophet_result_when_mocked(
+    client: TestClient,
+    mocker: MockerFixture,
+) -> None:
+    """GET /ml/forecast returns 200 and echoes the ForecastResult fields correctly."""
+    mocker.patch(
+        "app.main.forecast_spend",
+        return_value=ForecastResult(
+            horizon_months=2,
+            points=[
+                ForecastPoint(month="2025-07", predicted=1500.0, lower=1300.0, upper=1700.0),
+                ForecastPoint(month="2025-08", predicted=1600.0, lower=1400.0, upper=1800.0),
+            ],
+            mode="prophet",
+            note="ok",
+        ),
+    )
+
+    response = client.get("/ml/forecast?horizon=2")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["horizon_months"] == 2
+    assert body["mode"] == "prophet"
+    assert len(body["points"]) == 2
+    assert body["points"][0]["month"] == "2025-07"
+    assert body["points"][0]["predicted"] == pytest.approx(1500.0)
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — forecast: default horizon_months is 1
+# ---------------------------------------------------------------------------
+
+
+def test_forecast_endpoint_default_horizon_is_1(
+    client: TestClient,
+    mocker: MockerFixture,
+) -> None:
+    """Calling GET /ml/forecast without ?horizon passes horizon_months=1 to forecast_spend."""
+    captured_kwargs: list[dict] = []
+
+    def _capturing_forecast(series, horizon_months=1):  # type: ignore[no-untyped-def]
+        captured_kwargs.append({"horizon_months": horizon_months})
+        return ForecastResult(
+            horizon_months=horizon_months,
+            points=[],
+            mode="low-confidence-average",
+            note="No historical data; forecast unavailable.",
+        )
+
+    mocker.patch("app.main.forecast_spend", side_effect=_capturing_forecast)
+
+    response = client.get("/ml/forecast")
+
+    assert response.status_code == 200
+    assert len(captured_kwargs) == 1
+    assert captured_kwargs[0]["horizon_months"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 13 — forecast: low-confidence-average mode is serialised correctly
+# ---------------------------------------------------------------------------
+
+
+def test_forecast_endpoint_returns_low_confidence_result_when_mocked(
+    client: TestClient,
+    mocker: MockerFixture,
+) -> None:
+    """The endpoint correctly serialises a low-confidence-average ForecastResult."""
+    mocker.patch(
+        "app.main.forecast_spend",
+        return_value=ForecastResult(
+            horizon_months=3,
+            points=[
+                ForecastPoint(month="2025-09", predicted=800.0, lower=400.0, upper=1200.0),
+                ForecastPoint(month="2025-10", predicted=800.0, lower=400.0, upper=1200.0),
+                ForecastPoint(month="2025-11", predicted=800.0, lower=400.0, upper=1200.0),
+            ],
+            mode="low-confidence-average",
+            note="Only 2 months of history; using simple average as a low-confidence projection.",
+        ),
+    )
+
+    response = client.get("/ml/forecast?horizon=3")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "low-confidence-average"
+    assert body["note"] != ""
+
+
+# ---------------------------------------------------------------------------
+# Test 14 — forecast: invalid horizon raises 400
+# ---------------------------------------------------------------------------
+
+
+def test_forecast_endpoint_invalid_horizon_returns_400(
+    client: TestClient,
+    mocker: MockerFixture,
+) -> None:
+    """When forecast_spend raises ValueError for horizon < 1, the endpoint returns HTTP 400."""
+    mocker.patch(
+        "app.main.forecast_spend",
+        side_effect=ValueError("horizon_months must be >= 1, got 0"),
+    )
+
+    response = client.get("/ml/forecast?horizon=0")
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "horizon_months" in detail or ">= 1" in detail
+
+
+# ---------------------------------------------------------------------------
+# Test 15 — forecast: monthly series from DB is forwarded to forecast_spend
+# ---------------------------------------------------------------------------
+
+
+def test_forecast_endpoint_passes_monthly_series_from_db(
+    client: TestClient,
+    mocker: MockerFixture,
+) -> None:
+    """The (month, total) series built from DB aggregation reaches forecast_spend."""
+    captured_series: list[list[tuple[str, float]]] = []
+
+    def _capturing_forecast(series, horizon_months=1):  # type: ignore[no-untyped-def]
+        captured_series.append(series)
+        return ForecastResult(
+            horizon_months=horizon_months,
+            points=[],
+            mode="low-confidence-average",
+            note="No historical data; forecast unavailable.",
+        )
+
+    mocker.patch("app.main.forecast_spend", side_effect=_capturing_forecast)
+
+    # Seed two expenses in different months so total_by_month returns at least 2 rows.
+    client.post(
+        "/expenses",
+        json={
+            "amount": 100.0,
+            "category": "food",
+            "description": "lunch",
+            "occurred_at": "2025-03-15",
+        },
+    )
+    client.post(
+        "/expenses",
+        json={
+            "amount": 200.0,
+            "category": "transport",
+            "description": "taxi",
+            "occurred_at": "2025-04-10",
+        },
+    )
+
+    response = client.get("/ml/forecast?horizon=1")
+
+    assert response.status_code == 200
+    assert len(captured_series) == 1
+    series = captured_series[0]
+
+    # The series must be a list of (month_str, total) tuples.
+    assert isinstance(series, list)
+    months_in_series = [month for month, _ in series]
+    assert "2025-03" in months_in_series
+    assert "2025-04" in months_in_series
