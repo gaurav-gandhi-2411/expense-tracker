@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
 from sqlalchemy.orm import Session
 
+from app.ml.anomaly import AnomalyFlag, ExpensePoint
 from app.ml.categorizer import CategorySuggestion, TrainResult
 from app.models import Expense
 
@@ -214,3 +215,152 @@ def test_train_categorizer_endpoint_returns_trained_status_when_mock_says_so(
     assert body["n_categories"] == 2
     assert body["metrics"] is not None
     assert body["metrics"]["accuracy"] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — anomalies: empty DB returns empty list (real function, fast path)
+# ---------------------------------------------------------------------------
+
+
+def test_anomalies_endpoint_returns_empty_list_when_no_expenses(
+    client: TestClient,
+) -> None:
+    """With an empty DB, detect_anomalies returns [] below the sample threshold."""
+    response = client.get("/ml/anomalies")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — anomalies: mocked detector flags are echoed as response
+# ---------------------------------------------------------------------------
+
+
+def test_anomalies_endpoint_returns_flags_when_detector_finds_some(
+    client: TestClient,
+    mocker: MockerFixture,
+) -> None:
+    """When detect_anomalies returns flags, the endpoint serialises them correctly."""
+    mocker.patch(
+        "app.main.detect_anomalies",
+        return_value=[
+            AnomalyFlag(
+                expense_id=42,
+                amount=9999.0,
+                category="food",
+                reason="50x your typical food spend",
+                score=0.95,
+            )
+        ],
+    )
+
+    # Seed one expense so the endpoint has something to pass to detect_anomalies.
+    client.post(
+        "/expenses",
+        json={
+            "amount": 20.0,
+            "category": "food",
+            "description": "lunch",
+            "occurred_at": "2025-06-01",
+        },
+    )
+
+    response = client.get("/ml/anomalies")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["expense_id"] == 42
+    assert body[0]["reason"] == "50x your typical food spend"
+    assert body[0]["score"] == pytest.approx(0.95)
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — anomalies: since= param filters expenses before detection
+# ---------------------------------------------------------------------------
+
+
+def test_anomalies_endpoint_filters_by_since_param(
+    client: TestClient,
+    mocker: MockerFixture,
+) -> None:
+    """Only expenses on/after `since` are passed to detect_anomalies."""
+    captured: list[list[ExpensePoint]] = []
+
+    def _capturing_detect(expenses):  # type: ignore[no-untyped-def]
+        captured.append(expenses)
+        return []
+
+    mocker.patch("app.main.detect_anomalies", side_effect=_capturing_detect)
+
+    # Seed two expenses with different dates.
+    client.post(
+        "/expenses",
+        json={
+            "amount": 10.0,
+            "category": "food",
+            "description": "old",
+            "occurred_at": "2024-01-01",
+        },
+    )
+    client.post(
+        "/expenses",
+        json={
+            "amount": 20.0,
+            "category": "food",
+            "description": "new",
+            "occurred_at": "2025-12-01",
+        },
+    )
+
+    response = client.get("/ml/anomalies?since=2025-01-01")
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    points = captured[0]
+    assert len(points) == 1
+    assert str(points[0].occurred_at) == "2025-12-01"
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — anomalies: ORM→ExpensePoint mapping is correct
+# ---------------------------------------------------------------------------
+
+
+def test_anomalies_endpoint_passes_expense_points_with_expected_fields(
+    client: TestClient,
+    mocker: MockerFixture,
+) -> None:
+    """The ExpensePoint passed to detect_anomalies mirrors the seeded expense exactly."""
+    captured: list[list] = []
+
+    def _capturing_detect(expenses):  # type: ignore[no-untyped-def]
+        captured.append(expenses)
+        return []
+
+    mocker.patch("app.main.detect_anomalies", side_effect=_capturing_detect)
+
+    resp = client.post(
+        "/expenses",
+        json={
+            "amount": 75.5,
+            "category": "transport",
+            "description": "taxi",
+            "occurred_at": "2025-03-15",
+        },
+    )
+    assert resp.status_code == 201
+    seeded_id = resp.json()["id"]
+
+    response = client.get("/ml/anomalies")
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    points = captured[0]
+    assert len(points) == 1
+    p = points[0]
+    assert p.id == seeded_id
+    assert p.amount == pytest.approx(75.5)
+    assert p.category == "transport"
+    assert str(p.occurred_at) == "2025-03-15"

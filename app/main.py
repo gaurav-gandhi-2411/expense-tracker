@@ -11,10 +11,12 @@ from app import models as _models  # noqa: F401  # registers Expense with Base b
 from app.db import Base, engine, get_db
 from app.insights import generate_category_insight, generate_monthly_insight
 from app.llm import LLMClient, LLMError, get_llm_client
+from app.ml.anomaly import ExpensePoint, detect_anomalies
 from app.ml.categorizer import DEFAULT_PROTOTYPES, suggest_category, train_categorizer
 from app.models import Expense
 from app.parser import parse_expense_text
 from app.schemas import (
+    AnomalyFlagResponse,
     CategorizerTrainResponse,
     CategorySuggestionResponse,
     CategoryTotal,
@@ -203,3 +205,34 @@ def train_categorizer_endpoint(
         n_categories=result.n_categories,
         metrics=result.metrics,
     )
+
+
+@app.get("/ml/anomalies", response_model=list[AnomalyFlagResponse])
+def anomalies_endpoint(
+    since: date | None = None,
+    db: Session = Depends(get_db),  # noqa: B008
+) -> list[AnomalyFlagResponse]:
+    """Return anomalous expenses detected by IsolationForest.
+
+    Optionally filter to expenses on or after ``since`` before running detection.
+    Returns an empty list when the sample count is below the configured threshold.
+    """
+    stmt = select(Expense)
+    if since is not None:
+        stmt = stmt.where(Expense.occurred_at >= since)
+    rows = list(db.execute(stmt).scalars().all())
+    points = [
+        ExpensePoint(id=r.id, amount=r.amount, category=r.category, occurred_at=r.occurred_at)
+        for r in rows
+    ]
+    flags = detect_anomalies(points)
+    return [
+        AnomalyFlagResponse(
+            expense_id=f.expense_id,
+            amount=f.amount,
+            category=f.category,
+            reason=f.reason,
+            score=f.score,
+        )
+        for f in flags
+    ]

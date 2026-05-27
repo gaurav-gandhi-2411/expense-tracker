@@ -74,3 +74,11 @@ class CategorizerTrainResponse(BaseModel):
     n_examples: int = Field(..., ge=0)
     n_categories: int = Field(..., ge=0)
     metrics: dict[str, float] | None = None
+
+
+class AnomalyFlagResponse(BaseModel):
+    expense_id: int
+    amount: float
+    category: str
+    reason: str
+    score: float
