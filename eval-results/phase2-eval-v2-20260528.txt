@@ -1,0 +1,34 @@
+======================================================================
+SECTION 1: Categorizer eval (zero-shot, 8 canonical cases)
+======================================================================
+[pass] text='lunch with Bob at Bombay Brasserie, 850'  expected=food  got=food  score=0.53
+[pass] text='uber to office 240'  expected=transport  got=transport  score=0.38
+[pass] text='₹1500 for groceries yesterday'  expected=groceries  got=groceries  score=0.41
+[pass] text='electricity bill 2340'  expected=utilities  got=utilities  score=0.38
+[pass] text='netflix 649'  expected=entertainment  got=entertainment  score=0.38
+[pass] text='medicine 280'  expected=health  got=health  score=0.48
+[pass] text='5000 rent'  expected=rent  got=rent  score=0.45
+[pass] text='coffee 180'  expected=food  got=food  score=0.28
+
+Categorizer accuracy: 8/8 (100%)
+
+======================================================================
+SECTION 2: Anomaly eval (IsolationForest on live DB)
+======================================================================
+  [skip] Only 26 expenses found; need >= 50 for anomaly detection.
+  Hint: run `python scripts/seed.py` to populate ~25 deterministic fake expenses.
+
+======================================================================
+SECTION 3: Forecast eval (Prophet / fallback, 3-month horizon)
+======================================================================
+  mode : prophet
+  note : Prophet forecast based on 4 months of history.
+
+  2026-06  predicted=₹24,381.84  lower=₹18,558.86  upper=₹30,582.11
+  2026-07  predicted=₹30,548.41  lower=₹24,544.27  upper=₹35,627.77
+  2026-08  predicted=₹36,920.54  lower=₹31,445.40  upper=₹43,233.53
+
+Forecast summary: 3-month horizon, mode=prophet
+
+02:01:59 - cmdstanpy - INFO - Chain [1] start processing
+02:01:59 - cmdstanpy - INFO - Chain [1] done processing
