@@ -319,6 +319,187 @@ Requires `GROQ_API_KEY` set in `.env`.
 
 ---
 
+## ML features
+
+Phase 2 adds three local ML capabilities on top of the Phase 1 LLM layer: automatic expense categorization via sentence embeddings, anomaly detection using IsolationForest, and monthly spend forecasting using Prophet. All three run entirely locally — no API calls, no cost after the first model download. Four new endpoints are added: `POST /ml/categorize`, `POST /ml/train-categorizer`, `GET /ml/anomalies`, and `GET /ml/forecast`.
+
+### Setup
+
+Install deps (already declared in `pyproject.toml`):
+
+```bash
+pip install -e ".[dev]"
+```
+
+The first call to any categorize endpoint will download the `all-MiniLM-L6-v2` sentence-transformers model (~90 MB) and cache it under `~/.cache/huggingface/`. Plan for 30–60 s first-call latency on a cold start; subsequent calls are fast.
+
+### Environment variables
+
+| Var | Default | Description |
+| --- | --- | --- |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model name |
+| `MIN_TRAIN_PER_CATEGORY` | `30` | Min labeled examples per category before training is allowed |
+| `MIN_ANOMALY_SAMPLES` | `20` | Min total expenses before anomaly detection runs |
+| `MIN_FORECAST_MONTHS` | `3` | Min historical months before Prophet runs; below this, low-confidence average is returned |
+| `MODELS_DIR` | `models` | Directory for persisted trained classifier (gitignored) |
+
+### POST /ml/categorize
+
+Suggest a category for a raw expense description. Uses zero-shot prototype matching by default; switches to the trained LogisticRegression classifier automatically when `models/categorizer.joblib` exists on disk.
+
+```bash
+curl -X POST http://localhost:8000/ml/categorize \
+  -H "Content-Type: application/json" \
+  -d '{"text": "lunch with team at Bombay Brasserie"}'
+```
+
+Response:
+
+```json
+{
+  "category": "food",
+  "score": 0.87,
+  "mode": "zero-shot"
+}
+```
+
+---
+
+### POST /ml/train-categorizer
+
+Train a LogisticRegression classifier on all labeled expenses in the DB. Persists the model to `models/categorizer.joblib` on success. Refuses if any category has fewer than 30 examples or fewer than 2 qualifying categories are found.
+
+```bash
+curl -X POST http://localhost:8000/ml/train-categorizer
+```
+
+Response (trained):
+
+```json
+{
+  "status": "trained",
+  "reason": "trained on 120 examples across 5 categories",
+  "n_examples": 120,
+  "n_categories": 5,
+  "metrics": {"accuracy": 0.94}
+}
+```
+
+Response (refused):
+
+```json
+{
+  "status": "refused-insufficient-data",
+  "reason": "need >= 30 examples in at least 2 categories; 'rent' has only 4.",
+  "n_examples": 28,
+  "n_categories": 3,
+  "metrics": null
+}
+```
+
+---
+
+### GET /ml/anomalies
+
+Detect unusual expenses using IsolationForest. Returns an empty list when fewer than 20 total expenses exist (avoids noisy results on sparse data). The optional `since` query parameter restricts the input window.
+
+```bash
+curl "http://localhost:8000/ml/anomalies?since=2026-03-01"
+```
+
+Response:
+
+```json
+[
+  {
+    "expense_id": 17,
+    "amount": 14500.0,
+    "category": "rent",
+    "reason": "3.2x your typical rent spend",
+    "score": 0.4821
+  }
+]
+```
+
+Returns an empty array (`[]`) when fewer than `MIN_ANOMALY_SAMPLES` expenses are found.
+
+---
+
+### GET /ml/forecast
+
+Forecast monthly spend for the next N months using Prophet. Returns the `"low-confidence-average"` mode when fewer than 3 months of history are available, projecting a simple average with wide uncertainty bands instead of fitting a seasonal model.
+
+```bash
+curl "http://localhost:8000/ml/forecast?horizon=3"
+```
+
+Response (Prophet path):
+
+```json
+{
+  "horizon_months": 3,
+  "mode": "prophet",
+  "note": "Prophet forecast based on 5 months of history.",
+  "points": [
+    {"month": "2026-06", "predicted": 8420.50, "lower": 6100.00, "upper": 10800.00},
+    {"month": "2026-07", "predicted": 8750.00, "lower": 6350.00, "upper": 11200.00},
+    {"month": "2026-08", "predicted": 9100.00, "lower": 6600.00, "upper": 11650.00}
+  ]
+}
+```
+
+Response (low-confidence fallback):
+
+```json
+{
+  "horizon_months": 3,
+  "mode": "low-confidence-average",
+  "note": "Only 2 months of history; using simple average as a low-confidence projection.",
+  "points": [
+    {"month": "2026-06", "predicted": 7200.00, "lower": 3600.00, "upper": 10800.00},
+    {"month": "2026-07", "predicted": 7200.00, "lower": 3600.00, "upper": 10800.00},
+    {"month": "2026-08", "predicted": 7200.00, "lower": 3600.00, "upper": 10800.00}
+  ]
+}
+```
+
+---
+
+### Eval script
+
+`scripts/eval_ml.py` is a manual quality check that loads the real embedding model and runs all three ML features against real data. It is **not** in the CI test path.
+
+```bash
+# Run all three sections (requires seeded DB for anomaly + forecast)
+python scripts/eval_ml.py
+
+# Skip embedding-heavy categorizer section
+python scripts/eval_ml.py --skip-categorizer
+
+# Run only the categorizer section (no DB required)
+python scripts/eval_ml.py --skip-anomaly --skip-forecast
+
+# Run only anomaly + forecast (no embedding model load)
+python scripts/eval_ml.py --skip-categorizer
+```
+
+Seed the DB first for anomaly and forecast sections:
+
+```bash
+python scripts/seed.py
+python scripts/eval_ml.py
+```
+
+---
+
+### Phase 3 deploy note
+
+`sentence-transformers` pulls PyTorch (~2 GB). The local install is heavy and first model load is slow (30–60 s on cold start). The resulting Docker image will be large, and some free-tier hosts (Render, Railway) may exceed their size or memory caps.
+
+**Phase 3 concern (not a Phase 2 blocker):** Phase 3 may switch to a hosted embedding API (e.g. OpenAI embeddings, Cohere, or Voyage AI) or a torch-friendly deploy target (e.g. Fly.io with a sized VM) to keep the container lean and startup time acceptable. This decision will be documented in an ADR when it lands.
+
+---
+
 ## Run tests
 
 ```bash
@@ -336,6 +517,7 @@ expense-tracker/
 ├── pyproject.toml
 ├── README.md
 ├── .env.example
+├── models/            # persisted trained classifier (gitignored)
 ├── app/
 │   ├── config.py      # pydantic-settings Settings
 │   ├── db.py          # SQLAlchemy engine + session factory
@@ -345,12 +527,19 @@ expense-tracker/
 │   ├── models.py      # ORM model (Expense)
 │   ├── parser.py      # text → ParsedExpense via LLM
 │   ├── schemas.py     # Pydantic schemas (create / update / read)
-│   └── stats.py       # Aggregation queries (by-month, by-category)
+│   ├── stats.py       # Aggregation queries (by-month, by-category)
+│   └── ml/
+│       ├── __init__.py
+│       ├── embeddings.py   # sentence-transformers wrapper (lazy init)
+│       ├── categorizer.py  # zero-shot + trained category suggestion
+│       ├── anomaly.py      # IsolationForest anomaly detection
+│       └── forecast.py     # Prophet monthly spend forecasting
 ├── scripts/
 │   ├── eval_parser.py # manual quality check against real Groq API
+│   ├── eval_ml.py     # manual quality check for Phase 2 ML features (NOT CI)
 │   └── seed.py        # Deterministic fake-data seeder
 └── tests/
-    ├── conftest.py    # In-memory DB fixture + TestClient
+    ├── conftest.py          # In-memory DB fixture + TestClient
     ├── test_crud.py
     ├── test_filters.py
     ├── test_health.py
@@ -358,5 +547,10 @@ expense-tracker/
     ├── test_llm.py
     ├── test_llm_endpoints.py
     ├── test_parser.py
-    └── test_stats.py
+    ├── test_stats.py
+    ├── test_embeddings.py
+    ├── test_categorizer.py
+    ├── test_anomaly.py
+    ├── test_forecast.py
+    └── test_ml_endpoints.py
 ```
