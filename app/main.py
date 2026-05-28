@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from contextlib import asynccontextmanager
 from datetime import date
 from typing import Literal, cast
 
@@ -9,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app import models as _models  # noqa: F401  # registers Expense with Base before create_all
 from app.auth import get_current_user_id
+from app.config import get_settings
 from app.db import Base, engine, get_db
 from app.insights import generate_category_insight, generate_monthly_insight
 from app.llm import LLMClient, LLMError, get_llm_client
@@ -34,9 +37,22 @@ from app.schemas import (
 )
 from app.stats import total_by_category, total_by_month
 
-Base.metadata.create_all(bind=engine)
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="expense-tracker", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if get_settings().database_url.startswith("sqlite"):
+        Base.metadata.create_all(bind=engine)
+    if get_settings().run_migrations_on_startup:
+        logger.info("running alembic upgrade head on startup")
+        from alembic import command as _alembic_command
+        from alembic.config import Config as _AlembicConfig
+        _alembic_command.upgrade(_AlembicConfig("alembic.ini"), "head")
+    yield
+
+
+app = FastAPI(title="expense-tracker", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")

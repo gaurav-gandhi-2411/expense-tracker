@@ -4,16 +4,21 @@ from collections.abc import Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
-# check_same_thread=False is required because FastAPI can handle requests
-# across multiple threads while sharing the same SQLite connection pool.
-DATABASE_URL = "sqlite:///./expense_tracker.db"
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False},
-)
+def _make_engine():
+    from app.config import get_settings
 
+    url = get_settings().database_url
+    if url.startswith("sqlite"):
+        # check_same_thread=False required for FastAPI's threaded request handling.
+        return create_engine(url, connect_args={"check_same_thread": False})
+    # Postgres/Supabase: NullPool avoids pgBouncer pooler incompatibilities on free tier.
+    return create_engine(url, poolclass=NullPool)
+
+
+engine = _make_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 

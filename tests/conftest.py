@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Generator
+
+# Override DATABASE_URL before any app module is imported so _make_engine()
+# always uses SQLite in the test environment, regardless of what .env contains.
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 import pytest
 from fastapi.testclient import TestClient
