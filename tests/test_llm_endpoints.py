@@ -196,10 +196,18 @@ def test_from_text_endpoint_503_on_llm_error_does_not_create_row(
 # ---------------------------------------------------------------------------
 
 
+_TEST_USER_ID = "00000000-0000-0000-0000-000000000001"  # matches conftest TEST_USER_ID
+
+
 def _seed_expenses(db: Session, rows: list[dict]) -> None:
-    """Insert Expense rows from a list of dicts; commits once at the end."""
+    """Insert Expense rows from a list of dicts; commits once at the end.
+
+    Each row is stamped with the test user ID so that the per-user WHERE
+    filters added in Phase 3a Step 4 return the seeded data.
+    """
     for r in rows:
-        db.add(Expense(**r))
+        row_with_user = {**r, "user_id": _TEST_USER_ID}
+        db.add(Expense(**row_with_user))
     db.commit()
 
 
