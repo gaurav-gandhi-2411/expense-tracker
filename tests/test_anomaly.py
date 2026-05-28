@@ -99,16 +99,19 @@ class TestDetectAnomaliesOutlierDetection:
 
 class TestDetectAnomaliesThresholdBoundary:
     def test_detect_anomalies_below_threshold_returns_empty_with_note(
-        self, capsys: pytest.CaptureFixture[str]
+        self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """N=30 (below min_anomaly_samples=50) must return [] and print the threshold note."""
+        """N=30 (below min_anomaly_samples=50) must return [] and log the threshold note."""
+        import logging
+
         points = _make_food_points(30)
-        result = detect_anomalies(points)
+        with caplog.at_level(logging.INFO, logger="app.ml.anomaly"):
+            result = detect_anomalies(points)
         assert result == [], f"Expected empty list below threshold, got {result}"
-        captured = capsys.readouterr()
-        assert "threshold" in captured.out.lower() or "50" in captured.out, (
-            f"Expected threshold mention in stdout, got: {captured.out!r}"
-        )
+        assert any(
+            "threshold" in record.message.lower() or "50" in record.message
+            for record in caplog.records
+        ), f"Expected threshold mention in log, got: {[r.message for r in caplog.records]!r}"
 
     def test_detect_anomalies_above_threshold_flags_injected_outlier(self) -> None:
         """N=60 normal points + 1 extreme outlier — outlier must appear in flagged set."""

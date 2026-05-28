@@ -13,6 +13,22 @@ from app.ml.forecast import ForecastPoint, ForecastResult
 from app.models import Expense
 
 # ---------------------------------------------------------------------------
+# Module-level fixture: enable admin for all tests in this module
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _enable_admin(monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[return]
+    """Enable admin for all tests in this module so train-categorizer endpoints are accessible."""
+    from app import config
+
+    monkeypatch.setenv("ADMIN_ENABLED", "true")
+    config.get_settings.cache_clear()
+    yield  # type: ignore[misc]
+    config.get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

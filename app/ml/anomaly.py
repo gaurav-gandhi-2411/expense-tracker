@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
@@ -10,6 +11,8 @@ import numpy as np
 from sklearn.ensemble import IsolationForest  # type: ignore[import-untyped]
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Public dataclasses
@@ -128,8 +131,10 @@ def detect_anomalies(expenses: list[ExpensePoint]) -> list[AnomalyFlag]:
     threshold = get_settings().min_anomaly_samples
 
     if len(expenses) < threshold:
-        print(
-            f"[anomaly] skipped: {len(expenses)} samples below threshold {threshold}"
+        logger.info(
+            "anomaly detection skipped: %d samples below threshold %d",
+            len(expenses),
+            threshold,
         )
         return []
 

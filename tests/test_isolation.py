@@ -213,11 +213,18 @@ def test_categorize_excludes_other_user_categories(client: TestClient, db_sessio
 # ---------------------------------------------------------------------------
 
 
-def test_train_categorizer_uses_only_own_data(client: TestClient, db_session: Session) -> None:
+def test_train_categorizer_uses_only_own_data(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import config
+
+    monkeypatch.setenv("ADMIN_ENABLED", "true")
+    config.get_settings.cache_clear()
     _make_b_expense(db_session)  # user B has data; user A has none
     resp = client.post("/ml/train-categorizer")
     assert resp.status_code == 200
     assert resp.json()["status"] == "refused-insufficient-data"
+    config.get_settings.cache_clear()
 
 
 # ---------------------------------------------------------------------------

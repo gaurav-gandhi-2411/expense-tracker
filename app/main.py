@@ -6,6 +6,7 @@ from datetime import date
 from typing import Literal, cast
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import distinct, select
 from sqlalchemy.orm import Session
 
@@ -37,6 +38,11 @@ from app.schemas import (
 )
 from app.stats import total_by_category, total_by_month
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +59,19 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="expense-tracker", version="0.1.0", lifespan=lifespan)
+
+_cors_origins = (
+    [o.strip() for o in get_settings().cors_allowed_origins.split(",") if o.strip()]
+    if get_settings().cors_allowed_origins
+    else ["http://localhost:3000", "http://localhost:5173"]
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -255,6 +274,8 @@ def train_categorizer_endpoint(
     no signal for the text-embedding classifier.  Returns a refusal response
     when the data set is too small to produce a reliable model.
     """
+    if not get_settings().admin_enabled:
+        raise HTTPException(status_code=404, detail="not found")
     rows = db.execute(
         select(Expense.description, Expense.category).where(Expense.user_id == user_id)
     ).all()
