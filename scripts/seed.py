@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import random
 import sys
 from datetime import date, timedelta
@@ -32,7 +33,7 @@ DESCRIPTIONS = {c[0]: c[3] for c in CATEGORY_CONFIG}
 NUM_EXPENSES = 25
 
 
-def _build_expenses(today: date) -> list[Expense]:
+def _build_expenses(today: date, user_id: str) -> list[Expense]:
     """Return a list of NUM_EXPENSES unsaved Expense objects spread over the last 90 days."""
     chosen_categories = random.choices(CATEGORIES, weights=WEIGHTS, k=NUM_EXPENSES)
     expenses: list[Expense] = []
@@ -48,13 +49,27 @@ def _build_expenses(today: date) -> list[Expense]:
                 category=cat,
                 description=description,
                 occurred_at=occurred,
+                user_id=user_id,
             )
         )
     return expenses
 
 
 def main() -> None:
-    """Seed the database with deterministic fake expenses."""
+    """Seed the database with deterministic fake expenses.
+
+    --user-id: UUID to assign to all seeded expenses. Defaults to the
+               deterministic local-dev UUID 00000000-0000-0000-0000-000000000001.
+    """
+    parser = argparse.ArgumentParser(description="Seed expense database with fake data.")
+    parser.add_argument(
+        "--user-id",
+        default="00000000-0000-0000-0000-000000000001",
+        help="User UUID to assign to seeded expenses (default: local dev UUID)",
+    )
+    args = parser.parse_args()
+    user_id = args.user_id
+
     Base.metadata.create_all(bind=engine)
 
     db = SessionLocal()
@@ -64,7 +79,7 @@ def main() -> None:
         print(f"cleared {deleted} existing rows")
 
         today = date.today()
-        expenses = _build_expenses(today)
+        expenses = _build_expenses(today, user_id)
         for exp in expenses:
             db.add(exp)
         db.commit()
@@ -74,7 +89,7 @@ def main() -> None:
         for e in expenses:
             cat_counts[e.category] = cat_counts.get(e.category, 0) + 1
 
-        print(f"inserted {len(expenses)} rows across categories: {cat_counts}")
+        print(f"inserted {len(expenses)} rows (user_id={user_id}) across categories: {cat_counts}")
         print(f"earliest: {min(dates)}  latest: {max(dates)}")
     finally:
         db.close()

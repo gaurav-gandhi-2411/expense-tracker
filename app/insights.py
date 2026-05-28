@@ -52,6 +52,7 @@ def generate_monthly_insight(
     month: str,
     db: Session,
     *,
+    user_id: str,
     llm: LLMClient | None = None,
 ) -> Insight:
     """Generate a narrative insight for all expenses in a calendar month.
@@ -83,6 +84,7 @@ def generate_monthly_insight(
     stmt = select(Expense).where(
         Expense.occurred_at >= start_date,
         Expense.occurred_at < end_date_exclusive,
+        Expense.user_id == user_id,
     )
     rows: list[Expense] = list(db.execute(stmt).scalars().all())
 
@@ -138,6 +140,7 @@ def generate_category_insight(
     category: str,
     db: Session,
     *,
+    user_id: str,
     since: date | None = None,
     llm: LLMClient | None = None,
 ) -> Insight:
@@ -157,7 +160,7 @@ def generate_category_insight(
     Raises:
         LLMError: If the LLM call fails (propagates to caller/endpoint).
     """
-    stmt = select(Expense).where(Expense.category == category)
+    stmt = select(Expense).where(Expense.category == category, Expense.user_id == user_id)
     if since is not None:
         stmt = stmt.where(Expense.occurred_at >= since)
     rows: list[Expense] = list(db.execute(stmt).scalars().all())

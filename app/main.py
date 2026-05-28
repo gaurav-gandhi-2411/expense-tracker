@@ -50,7 +50,7 @@ def create_expense(
     db: Session = Depends(get_db),  # noqa: B008
     user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> Expense:
-    row = Expense(**payload.model_dump())
+    row = Expense(**payload.model_dump(), user_id=user_id)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -64,7 +64,7 @@ def list_expenses(
     db: Session = Depends(get_db),  # noqa: B008
     user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> list[Expense]:
-    stmt = select(Expense)
+    stmt = select(Expense).where(Expense.user_id == user_id)
     if category is not None:
         stmt = stmt.where(Expense.category == category)
     if since is not None:
@@ -79,7 +79,9 @@ def get_expense(
     db: Session = Depends(get_db),  # noqa: B008
     user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> Expense:
-    row = db.execute(select(Expense).where(Expense.id == expense_id)).scalar_one_or_none()
+    row = db.execute(
+        select(Expense).where(Expense.id == expense_id, Expense.user_id == user_id)
+    ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="expense not found")
     return row
@@ -92,7 +94,9 @@ def update_expense(
     db: Session = Depends(get_db),  # noqa: B008
     user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> Expense:
-    row = db.execute(select(Expense).where(Expense.id == expense_id)).scalar_one_or_none()
+    row = db.execute(
+        select(Expense).where(Expense.id == expense_id, Expense.user_id == user_id)
+    ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="expense not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
@@ -108,7 +112,9 @@ def delete_expense(
     db: Session = Depends(get_db),  # noqa: B008
     user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> None:
-    row = db.execute(select(Expense).where(Expense.id == expense_id)).scalar_one_or_none()
+    row = db.execute(
+        select(Expense).where(Expense.id == expense_id, Expense.user_id == user_id)
+    ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="expense not found")
     db.delete(row)
@@ -120,7 +126,7 @@ def stats_by_month(
     db: Session = Depends(get_db),  # noqa: B008
     user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> list[MonthTotal]:
-    return total_by_month(db)
+    return total_by_month(db, user_id)
 
 
 @app.get("/stats/by-category", response_model=list[CategoryTotal])
@@ -128,7 +134,7 @@ def stats_by_category(
     db: Session = Depends(get_db),  # noqa: B008
     user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> list[CategoryTotal]:
-    return total_by_category(db)
+    return total_by_category(db, user_id)
 
 
 @app.post("/expenses/parse", response_model=ParsedExpense)
@@ -159,6 +165,7 @@ def create_expense_from_text(
         category=parsed.category,
         description=parsed.description,
         occurred_at=parsed.occurred_at,
+        user_id=user_id,
     )
     db.add(row)
     db.commit()
@@ -174,7 +181,7 @@ def monthly_insight_endpoint(
     user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> Insight:
     try:
-        return generate_monthly_insight(month, db, llm=llm)
+        return generate_monthly_insight(month, db, user_id=user_id, llm=llm)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except LLMError as exc:
@@ -190,7 +197,7 @@ def category_insight_endpoint(
     user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> Insight:
     try:
-        return generate_category_insight(category, db, since=since, llm=llm)
+        return generate_category_insight(category, db, user_id=user_id, since=since, llm=llm)
     except LLMError as exc:
         raise HTTPException(status_code=503, detail=f"LLM unavailable: {exc}") from exc
 
@@ -206,7 +213,11 @@ def categorize_endpoint(
     Merges categories already present in the DB with the built-in default
     prototypes so that user-defined categories are always considered.
     """
-    db_categories = list(db.execute(select(distinct(Expense.category))).scalars().all())
+    db_categories = list(
+        db.execute(
+            select(distinct(Expense.category)).where(Expense.user_id == user_id)
+        ).scalars().all()
+    )
     prototypes = sorted(set(db_categories) | set(DEFAULT_PROTOTYPES))
     result = suggest_category(payload.text, prototypes)
     return CategorySuggestionResponse(
@@ -228,7 +239,9 @@ def train_categorizer_endpoint(
     no signal for the text-embedding classifier.  Returns a refusal response
     when the data set is too small to produce a reliable model.
     """
-    rows = db.execute(select(Expense.description, Expense.category)).all()
+    rows = db.execute(
+        select(Expense.description, Expense.category).where(Expense.user_id == user_id)
+    ).all()
     labeled = [(desc, cat) for desc, cat in rows if desc and desc.strip()]
     result = train_categorizer(labeled)
     return CategorizerTrainResponse(
@@ -251,7 +264,7 @@ def anomalies_endpoint(
     Optionally filter to expenses on or after ``since`` before running detection.
     Returns an empty list when the sample count is below the configured threshold.
     """
-    stmt = select(Expense)
+    stmt = select(Expense).where(Expense.user_id == user_id)
     if since is not None:
         stmt = stmt.where(Expense.occurred_at >= since)
     rows = list(db.execute(stmt).scalars().all())
@@ -284,7 +297,7 @@ def forecast_endpoint(
     delegates to :func:`app.ml.forecast.forecast_spend`.  Returns HTTP 400 when
     ``horizon`` is less than 1.
     """
-    monthly = total_by_month(db)
+    monthly = total_by_month(db, user_id)
     series = [(row.month, row.total) for row in monthly]
     try:
         result = forecast_spend(series, horizon_months=horizon)
