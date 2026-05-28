@@ -3,12 +3,15 @@ name = "expense-tracker"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
+    "alembic",
     "fastapi",
     "groq",
     "joblib",
     "prophet",
+    "psycopg2-binary",
     "pydantic>=2",
     "pydantic-settings",
+    "pyjwt",
     "python-dotenv",
     "scikit-learn",
     "sentence-transformers",

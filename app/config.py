@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     # Zero-shot confidence below this score triggers LLM fallback in categorizer
     categorizer_fallback_threshold: float = 0.30
 
+    # Phase 3a — production config
+    database_url: str = "sqlite:///./expense_tracker.db"
+    supabase_jwt_secret: str = ""
+    supabase_url: str = ""
+    admin_enabled: bool = False
+    run_migrations_on_startup: bool = False
+    cors_allowed_origins: str = ""  # comma-separated list; empty means default dev origins only
+
 
 @functools.lru_cache
 def get_settings() -> Settings:
