@@ -8,8 +8,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.auth import get_current_user_id
 from app.db import Base, get_db
 from app.main import app
+
+TEST_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 
 # StaticPool forces SQLAlchemy to reuse a single in-memory connection across
@@ -50,6 +53,7 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
             pass  # session lifecycle managed by db_session fixture
 
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
     with TestClient(app) as tc:
         yield tc
     app.dependency_overrides.clear()

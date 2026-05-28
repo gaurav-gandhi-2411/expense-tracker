@@ -8,6 +8,7 @@ from sqlalchemy import distinct, select
 from sqlalchemy.orm import Session
 
 from app import models as _models  # noqa: F401  # registers Expense with Base before create_all
+from app.auth import get_current_user_id
 from app.db import Base, engine, get_db
 from app.insights import generate_category_insight, generate_monthly_insight
 from app.llm import LLMClient, LLMError, get_llm_client
@@ -44,7 +45,11 @@ def health() -> dict[str, str]:
 
 
 @app.post("/expenses", status_code=201, response_model=ExpenseRead)
-def create_expense(payload: ExpenseCreate, db: Session = Depends(get_db)) -> Expense:  # noqa: B008
+def create_expense(
+    payload: ExpenseCreate,
+    db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
+) -> Expense:
     row = Expense(**payload.model_dump())
     db.add(row)
     db.commit()
@@ -57,6 +62,7 @@ def list_expenses(
     category: str | None = None,
     since: date | None = None,
     db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> list[Expense]:
     stmt = select(Expense)
     if category is not None:
@@ -68,7 +74,11 @@ def list_expenses(
 
 
 @app.get("/expenses/{expense_id}", response_model=ExpenseRead)
-def get_expense(expense_id: int, db: Session = Depends(get_db)) -> Expense:  # noqa: B008
+def get_expense(
+    expense_id: int,
+    db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
+) -> Expense:
     row = db.execute(select(Expense).where(Expense.id == expense_id)).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="expense not found")
@@ -77,7 +87,10 @@ def get_expense(expense_id: int, db: Session = Depends(get_db)) -> Expense:  # n
 
 @app.patch("/expenses/{expense_id}", response_model=ExpenseRead)
 def update_expense(
-    expense_id: int, payload: ExpenseUpdate, db: Session = Depends(get_db)  # noqa: B008
+    expense_id: int,
+    payload: ExpenseUpdate,
+    db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> Expense:
     row = db.execute(select(Expense).where(Expense.id == expense_id)).scalar_one_or_none()
     if row is None:
@@ -90,7 +103,11 @@ def update_expense(
 
 
 @app.delete("/expenses/{expense_id}", status_code=204)
-def delete_expense(expense_id: int, db: Session = Depends(get_db)) -> None:  # noqa: B008
+def delete_expense(
+    expense_id: int,
+    db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
+) -> None:
     row = db.execute(select(Expense).where(Expense.id == expense_id)).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="expense not found")
@@ -99,12 +116,18 @@ def delete_expense(expense_id: int, db: Session = Depends(get_db)) -> None:  # n
 
 
 @app.get("/stats/by-month", response_model=list[MonthTotal])
-def stats_by_month(db: Session = Depends(get_db)) -> list[MonthTotal]:  # noqa: B008
+def stats_by_month(
+    db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
+) -> list[MonthTotal]:
     return total_by_month(db)
 
 
 @app.get("/stats/by-category", response_model=list[CategoryTotal])
-def stats_by_category(db: Session = Depends(get_db)) -> list[CategoryTotal]:  # noqa: B008
+def stats_by_category(
+    db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
+) -> list[CategoryTotal]:
     return total_by_category(db)
 
 
@@ -112,6 +135,7 @@ def stats_by_category(db: Session = Depends(get_db)) -> list[CategoryTotal]:  # 
 def parse_expense_endpoint(
     payload: TextInput,
     llm: LLMClient = Depends(get_llm_client),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> ParsedExpense:
     try:
         return parse_expense_text(payload.text, llm=llm)
@@ -124,6 +148,7 @@ def create_expense_from_text(
     payload: TextInput,
     db: Session = Depends(get_db),  # noqa: B008
     llm: LLMClient = Depends(get_llm_client),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> Expense:
     try:
         parsed = parse_expense_text(payload.text, llm=llm)
@@ -146,6 +171,7 @@ def monthly_insight_endpoint(
     month: str,
     db: Session = Depends(get_db),  # noqa: B008
     llm: LLMClient = Depends(get_llm_client),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> Insight:
     try:
         return generate_monthly_insight(month, db, llm=llm)
@@ -161,6 +187,7 @@ def category_insight_endpoint(
     since: date | None = None,
     db: Session = Depends(get_db),  # noqa: B008
     llm: LLMClient = Depends(get_llm_client),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> Insight:
     try:
         return generate_category_insight(category, db, since=since, llm=llm)
@@ -172,6 +199,7 @@ def category_insight_endpoint(
 def categorize_endpoint(
     payload: TextInput,
     db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> CategorySuggestionResponse:
     """Suggest a category for the given expense description.
 
@@ -192,6 +220,7 @@ def categorize_endpoint(
 @app.post("/ml/train-categorizer", response_model=CategorizerTrainResponse)
 def train_categorizer_endpoint(
     db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> CategorizerTrainResponse:
     """Fit a logistic-regression categorizer on all expenses in the DB.
 
@@ -215,6 +244,7 @@ def train_categorizer_endpoint(
 def anomalies_endpoint(
     since: date | None = None,
     db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> list[AnomalyFlagResponse]:
     """Return anomalous expenses detected by IsolationForest.
 
@@ -246,6 +276,7 @@ def anomalies_endpoint(
 def forecast_endpoint(
     horizon: int = 1,
     db: Session = Depends(get_db),  # noqa: B008
+    user_id: str = Depends(get_current_user_id),  # noqa: B008
 ) -> ForecastResponse:
     """Return a Prophet (or low-confidence-average) spend forecast for the requested horizon.
 
