@@ -492,14 +492,6 @@ python scripts/eval_ml.py
 
 ---
 
-### Phase 3 deploy note
-
-`sentence-transformers` pulls PyTorch (~2 GB). The local install is heavy and first model load is slow (30–60 s on cold start). The resulting Docker image will be large, and some free-tier hosts (Render, Railway) may exceed their size or memory caps.
-
-**Phase 3 concern (not a Phase 2 blocker):** Phase 3 may switch to a hosted embedding API (e.g. OpenAI embeddings, Cohere, or Voyage AI) or a torch-friendly deploy target (e.g. Fly.io with a sized VM) to keep the container lean and startup time acceptable. This decision will be documented in an ADR when it lands.
-
----
-
 ## Run tests
 
 ```bash
@@ -554,3 +546,100 @@ expense-tracker/
     ├── test_forecast.py
     └── test_ml_endpoints.py
 ```
+
+---
+
+## Production setup
+
+### Prerequisites
+
+- A Supabase project (free tier is fine). From your Supabase dashboard:
+  - **Database URL**: Project Settings → Database → Connection string → Session mode (port 5432). Prefix with `postgresql+psycopg2://`.
+  - **JWT Secret**: Project Settings → API → JWT Settings → JWT Secret.
+  - **Project URL**: Project Settings → API → Project URL.
+- A Groq API key (free tier): https://console.groq.com
+- Google Cloud SDK (`gcloud`) installed and authenticated.
+
+### Deploy to Cloud Run
+
+1. Confirm your `.env` has all four secrets filled in (`DATABASE_URL`, `SUPABASE_JWT_SECRET`, `SUPABASE_URL`, `GROQ_API_KEY`).
+
+2. Confirm the target GCP project:
+   ```bash
+   gcloud config get-value project
+   ```
+
+3. Run the deploy script (PowerShell on Windows, bash on Linux/macOS):
+   ```powershell
+   # Windows
+   .\scripts\deploy.ps1
+   ```
+   ```bash
+   # Linux / macOS
+   bash scripts/deploy.sh
+   ```
+
+4. The script enables required APIs, triggers a Cloud Build, and deploys to Cloud Run in `us-central1`. First build takes 5–10 minutes.
+
+5. The Cloud Run URL is printed at the end of the deploy output. It looks like:
+   ```
+   https://expense-tracker-xxxxxxxx-uc.a.run.app
+   ```
+
+### Environment variable reference
+
+| Var | Required | Description |
+| --- | --- | --- |
+| `GROQ_API_KEY` | Yes | Groq API key |
+| `DATABASE_URL` | Yes (prod) | Supabase Postgres connection string (`postgresql+psycopg2://...`) |
+| `SUPABASE_JWT_SECRET` | Yes (prod) | Supabase project JWT secret (HS256) |
+| `SUPABASE_URL` | Yes (prod) | Supabase project URL |
+| `RUN_MIGRATIONS_ON_STARTUP` | Prod | `true` runs `alembic upgrade head` on startup; default `false` |
+| `ADMIN_ENABLED` | Optional | `true` enables `POST /ml/train-categorizer`; default `false` |
+| `CORS_ALLOWED_ORIGINS` | Optional | Comma-separated allowed origins; defaults to localhost dev ports |
+
+### JWT authentication flow
+
+All endpoints except `GET /health` require a Bearer token in the `Authorization` header:
+
+```bash
+curl https://your-app.run.app/expenses \
+  -H "Authorization: Bearer <supabase_jwt>"
+```
+
+The token is a Supabase-issued HS256 JWT. The API validates it against `SUPABASE_JWT_SECRET` and extracts the `sub` claim as the user ID. Invalid or expired tokens return `401`.
+
+---
+
+## Local development
+
+The app defaults to SQLite for local development — no Postgres or Supabase connection needed.
+
+```bash
+# Copy env template and add GROQ_API_KEY (other vars are optional locally)
+cp .env.example .env
+# Edit .env: set GROQ_API_KEY=gsk_...
+
+# Run the server
+python -m uvicorn app.main:app --reload
+```
+
+Seed the database with 25 deterministic fake expenses for the local dev user:
+
+```bash
+python scripts/seed.py
+# Optional: seed for a specific user UUID
+python scripts/seed.py --user-id 00000000-0000-0000-0000-000000000001
+```
+
+The test suite always overrides the auth dependency to return a fixed test UUID (`00000000-0000-0000-0000-000000000001`) and uses an in-memory SQLite database — no `.env` secrets needed for tests:
+
+```bash
+pytest -v
+```
+
+---
+
+## Cold start expectations
+
+This service is deployed with `--min-instances 0` to stay within the Cloud Run always-free tier. When the container has been idle, the first incoming request triggers a cold start: the container must spin up, load the sentence-transformers model (`all-MiniLM-L6-v2`, ~90 MB), and initialise the FastAPI app. **Expect 60–120 seconds of latency on the first request after idle.** Subsequent requests respond normally (typically under 200 ms for CRUD endpoints). If you need consistent sub-second latency, set `--min-instances 1` in the deploy script — this costs approximately $5–10/month at the 1 CPU / 2 Gi configuration and falls outside the always-free tier.
