@@ -17,3 +17,4 @@ class Expense(Base):
     description: Mapped[str] = mapped_column(nullable=False, default="")
     occurred_at: Mapped[date] = mapped_column(nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+    user_id: Mapped[str] = mapped_column(nullable=False, index=True, default="")

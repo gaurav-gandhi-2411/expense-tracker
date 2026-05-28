@@ -1,31 +1,42 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from collections import defaultdict
+
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Expense
 from app.schemas import CategoryTotal, MonthTotal
 
 
-def total_by_month(db: Session) -> list[MonthTotal]:
-    """Return total spend per calendar month, sorted ascending by month string."""
-    # strftime("%Y-%m", ...) is SQLite-specific; gives a sortable "YYYY-MM" key
-    month_key = func.strftime("%Y-%m", Expense.occurred_at).label("month")
-    stmt = (
-        select(month_key, func.sum(Expense.amount).label("total"))
-        .group_by(month_key)
-        .order_by(month_key.asc())
-    )
+def total_by_month(db: Session, user_id: str) -> list[MonthTotal]:
+    """Return total spend per calendar month, sorted ascending by month string.
+
+    Groups in Python rather than SQL so the query works identically on SQLite and Postgres.
+    """
+    stmt = select(Expense.occurred_at, Expense.amount).where(Expense.user_id == user_id)
     rows = db.execute(stmt).all()
-    return [MonthTotal(month=row.month, total=float(row.total)) for row in rows]
+    totals: dict[str, float] = defaultdict(float)
+    for row in rows:
+        key = row.occurred_at.strftime("%Y-%m")
+        totals[key] += row.amount
+    return sorted(
+        [MonthTotal(month=k, total=v) for k, v in totals.items()],
+        key=lambda x: x.month,
+    )
 
 
-def total_by_category(db: Session) -> list[CategoryTotal]:
-    """Return total spend per category, sorted by total descending then category ascending."""
-    stmt = (
-        select(Expense.category, func.sum(Expense.amount).label("total"))
-        .group_by(Expense.category)
-        .order_by(func.sum(Expense.amount).desc(), Expense.category.asc())
-    )
+def total_by_category(db: Session, user_id: str) -> list[CategoryTotal]:
+    """Return total spend per category, sorted by total descending then category ascending.
+
+    Groups in Python rather than SQL so the query works identically on SQLite and Postgres.
+    """
+    stmt = select(Expense.category, Expense.amount).where(Expense.user_id == user_id)
     rows = db.execute(stmt).all()
-    return [CategoryTotal(category=row.category, total=float(row.total)) for row in rows]
+    totals: dict[str, float] = defaultdict(float)
+    for row in rows:
+        totals[row.category] += row.amount
+    return sorted(
+        [CategoryTotal(category=k, total=v) for k, v in totals.items()],
+        key=lambda x: (-x.total, x.category),
+    )
