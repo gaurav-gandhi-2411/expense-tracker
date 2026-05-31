@@ -1,254 +1,336 @@
-# Project Spec: expense-tracker — Phase 3a (backend production-ready, GCP Cloud Run)
+# Project Spec: expense-tracker — Phase 3b (frontend foundation + auth + CRUD + deploy)
 
 ## Goal
 
-Make the backend production-ready and deployed to GCP Cloud Run's always-free tier: multi-user via Supabase Auth (JWT validation), per-user data isolation, Alembic migrations, Supabase Postgres for prod (SQLite for local dev and tests). After Phase 3a, the backend is live, authenticated, and ready for a frontend (Phase 3b).
+Build a Next.js 15 frontend on top of the live Cloud Run backend. Ship a minimum viable product: users sign up via Supabase Auth, log in, add expenses (natural-language input as the hero interaction), view their expenses, edit, delete. Mobile-responsive throughout. Deploy to Vercel free tier. At the end of Phase 3b, the product is usable by a friend with a sign-up link — fully end-to-end.
 
-No frontend work. No Vercel. No sign-up UI.
+ML feature demos (categorize tester, anomalies, forecast) and insights/charts are OUT OF SCOPE (Phase 3c).
 
 ## Current state (read-only context)
-See CURRENT_STATE.md (post-Phase-2.6). Key facts:
-- 16 endpoints, 115/115 tests, ruff + mypy clean
-- Load-bearing: app/db.py, app/models.py, tests/conftest.py, app/llm.py, app/config.py
-- Categorizer at 8/8 on canonical cases; anomaly gated below N=50
-- All endpoints currently unauthenticated, single-user, SQLite-only
-- User has Supabase project created with DATABASE_URL + SUPABASE_JWT_SECRET available in local .env
+See CURRENT_STATE.md (post-Phase-3a). Key facts:
+- Backend live at https://expense-tracker-242393598566.us-central1.run.app
+- Supabase project active; ES256 JWT signing (dual-algorithm validator in app/auth.py handles both ES256 and HS256)
+- 141/141 backend tests pass, ruff + mypy clean
+- 16 backend endpoints, all require JWT except /health
+- User-scoped data isolation verified end-to-end (test_isolation.py + live e2e artifact)
+- Test user `test@expense-tracker.local` exists in Supabase Auth
+- All Phase 1/2/2.6 features working live
+
+This iteration adds the `frontend/` directory at repo root alongside existing `app/`, `tests/`, etc. No backend code changes EXCEPT a CORS allowlist update.
 
 ## Scope
 
-### In scope (Phase 3a)
+### In scope (Phase 3b)
 
-**Auth (Supabase JWT)**
-- New module `app/auth.py`: validates Supabase JWT (HS256, secret from env var `SUPABASE_JWT_SECRET`), extracts user_id from `sub` claim (UUID string), exposes a FastAPI dependency `get_current_user_id() -> str`
-- Use `pyjwt` (lightweight, well-maintained) — NOT `python-jose`
-- Apply `get_current_user_id` dependency to ALL existing endpoints EXCEPT `GET /health`
-- Tests override the dependency to return a fixed test UUID — no real JWT validation in pytest
-- `POST /ml/train-categorizer` additionally gated behind `ADMIN_ENABLED=true` env var (defaults false)
+**Project scaffolding**
+- New `frontend/` directory at repo root
+- Next.js 15.x with App Router, TypeScript (strict mode), Tailwind CSS, ESLint
+- shadcn/ui initialized (`components.json` configured)
+- Install minimum shadcn components needed: button, input, label, card, form, dialog, dropdown-menu, toast, separator, skeleton, table
+- TanStack Query (@tanstack/react-query) for server state
+- Supabase JS client (@supabase/supabase-js)
+- @supabase/ssr for Next.js App Router integration
+- lucide-react (comes with shadcn) for icons
+- date-fns for date formatting (lightweight)
 
-**Multi-user data isolation**
-- Add `user_id: str` (UUID, indexed, non-null) column to `Expense` ORM model
-- All read queries in app/main.py, app/stats.py, app/insights.py, app/ml/anomaly.py, app/ml/forecast.py filter `WHERE user_id = :current_user_id`
-- POST/PATCH endpoints stamp `user_id` from the current authenticated user
-- 404 (not 403) on cross-user resource access — don't leak existence
-- user_id is internal, NOT included in API responses
+**Auth (Supabase via custom shadcn forms)**
+- `/sign-in` page — email + password form, "Sign in" button, link to /sign-up
+- `/sign-up` page — email + password form, "Create account" button, link to /sign-in
+- Form validation via react-hook-form + zod (shadcn standard)
+- Both forms use shadcn Form + Input + Button components
+- Auth calls go through Supabase JS client; session stored via @supabase/ssr (cookies, SSR-safe)
+- Auth state available via a `useUser()` hook
+- Middleware (`middleware.ts`) protects authenticated routes — unauthenticated users hitting protected paths redirect to /sign-in
+- Sign-out action in the nav
 
-**Alembic migrations**
-- Initialize Alembic in `migrations/` directory
-- Migration 001: baseline schema (creates `expenses` table from current SQLAlchemy models — for fresh prod DB)
-- Migration 002: add user_id column with index
-- App startup runs migrations automatically when `RUN_MIGRATIONS_ON_STARTUP=true`; false for tests/local
+**API client layer**
+- `frontend/src/lib/api.ts` — fetch wrapper that:
+  - Reads JWT from current Supabase session
+  - Adds `Authorization: Bearer <token>` to all requests
+  - Reads base URL from `NEXT_PUBLIC_API_BASE_URL` env var
+  - Throws typed errors on non-2xx (so React Query handles them cleanly)
+- TypeScript types in `frontend/src/types/expense.ts` mirroring the backend's Pydantic schemas — Expense, ExpenseCreate, ExpenseUpdate, ParsedExpense, TextInput
+- React Query hooks in `frontend/src/lib/hooks/`:
+  - `useExpenses()` — list with optional filters
+  - `useExpense(id)` — single
+  - `useCreateExpense()`, `useCreateFromText()`, `useUpdateExpense()`, `useDeleteExpense()` mutations
+  - Mutations invalidate the list query on success
 
-**Postgres adapter**
-- `app/db.py` reads `DATABASE_URL` from env. Default: `sqlite:///./expense_tracker.db` for local dev. Prod: Supabase Postgres URL.
-- Add `psycopg2-binary` as dep (not asyncpg — we're sync everywhere)
-- Tests continue using in-memory SQLite via existing override pattern
-- `app/db.py` `get_db` signature unchanged (load-bearing)
-- Use `sqlalchemy.pool.NullPool` for Supabase connection (Supabase pooler doesn't play well with SQLAlchemy's default pool on free tier)
+**Pages (5 screens)**
+- `/` (root) — redirects to /expenses if signed in, /sign-in if not
+- `/sign-in` and `/sign-up` (already covered above)
+- `/expenses` (list view, authenticated)
+  - Desktop: table with columns: occurred_at, category, description, amount, actions
+  - Mobile: stacked cards
+  - Empty state ("No expenses yet — add your first")
+  - Loading skeleton while fetching
+  - Error state with retry button
+- `/expenses/new` (add view, authenticated)
+  - HERO: large natural-language input (textarea + "Parse & Add" button) — uses POST /expenses/from-text
+  - SECONDARY: collapsible "Add manually" form below — uses POST /expenses
+  - On success: toast notification, redirect to /expenses
+  - On error: toast with error detail
+- `/expenses/[id]/edit` (edit view, authenticated)
+  - Pre-filled form with all fields
+  - Save (PATCH) + Delete (with confirm dialog) + Cancel
+  - On save/delete: toast + redirect to /expenses
 
-**Configuration additions** (in `app/config.py`)
-- `DATABASE_URL` (str)
-- `SUPABASE_JWT_SECRET` (str)
-- `SUPABASE_URL` (str)
-- `ADMIN_ENABLED` (bool, default false)
-- `RUN_MIGRATIONS_ON_STARTUP` (bool, default false)
-- `CORS_ALLOWED_ORIGINS` (comma-separated list of origins, default empty)
-- `.env.example` updated with all new variables + comments
+**Layout & navigation**
+- Authenticated routes share a layout with a top nav bar
+- Nav contents: app name/logo (text is fine), "Expenses" link, "Add expense" button, user email + sign-out menu
+- Desktop: horizontal nav bar
+- Mobile: hamburger menu (sheet/drawer) opening from the left
 
-**CORS**
-- CORS middleware in `app/main.py` reading allowed origins from config
-- Defaults: in prod, explicit allowlist via env var; in dev, localhost:3000 and localhost:5173
+**Mobile responsiveness (must work cleanly)**
+- All pages tested mentally at 360px wide
+- Touch targets ≥44px (Tailwind's default sizing on buttons/inputs satisfies this)
+- Tables → cards transition at md: breakpoint
+- Forms stack vertically on small screens
+- Nav collapses to hamburger below md:
 
-**Container & deploy (GCP Cloud Run, us-central1 free tier)**
-- `Dockerfile`:
-  - Base: `python:3.11-slim`
-  - System deps for Prophet (build-essential, then removed after pip install if possible)
-  - Install **CPU-only torch** explicitly: `pip install torch --index-url https://download.pytorch.org/whl/cpu` BEFORE pip-installing the project. This is critical — default torch is ~2GB CUDA-enabled; CPU-only is ~200MB.
-  - Multi-stage build acceptable but not required; single stage is simpler
-  - Copy app/, migrations/, alembic.ini, scripts/ (excluding tests/, eval-results/, .venv/, etc. via .dockerignore)
-  - Listen on `${PORT}` (Cloud Run default 8080)
-  - CMD: `exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}`
-- `.dockerignore`: exclude `.venv/`, `tests/`, `eval-results/`, `__pycache__/`, `*.pyc`, `.env*`, `models/`, `expense_tracker.db`, `.git/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`
-- `scripts/deploy.sh`: shell script with the gcloud commands the user runs (NOT executed by orchestrator — orchestrator generates it; user runs it). Includes:
-  - `gcloud config set project [PROJECT_ID]` reminder
-  - `gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com`
-  - `gcloud run deploy expense-tracker --source . --region us-central1 --memory 2Gi --cpu 1 --max-instances 2 --min-instances 0 --timeout 300 --allow-unauthenticated --set-env-vars "DATABASE_URL=...,SUPABASE_JWT_SECRET=...,GROQ_API_KEY=...,RUN_MIGRATIONS_ON_STARTUP=true,ADMIN_ENABLED=false"`
-  - Comments explaining each flag
-- Service-level: `--allow-unauthenticated` (we do app-layer JWT, not platform-layer auth)
+**Backend update (single env var change, no code change)**
+- After Vercel preview/prod URLs are known, update Cloud Run's `CORS_ALLOWED_ORIGINS` env var to include them
+- Specifically: `https://<your-vercel-prod>.vercel.app` + `https://<your-vercel-preview>.vercel.app` + `http://localhost:3000`
+- Done via `gcloud run services update` — no redeploy from source needed
+- Orchestrator generates the exact command; human runs it at the interactive checkpoint
 
-**Production-suitable logging**
-- Replace remaining `print` calls with `logging` module
-- Configure root logger at INFO with a structured-ish formatter (timestamp, level, module, message)
-- Cloud Run captures stdout/stderr into Cloud Logging automatically — no extra config needed
+**Environment variables (frontend)**
+- `NEXT_PUBLIC_SUPABASE_URL` (same as backend's SUPABASE_URL)
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` (the anon/public key from Supabase Settings → API)
+- `NEXT_PUBLIC_API_BASE_URL` (https://expense-tracker-242393598566.us-central1.run.app)
+- `.env.local.example` committed with placeholders; `.env.local` in .gitignore
+- Same three vars set in Vercel project's Environment Variables settings (Production + Preview)
 
-**Seed script update**
-- `scripts/seed.py` takes optional `--user-id UUID`; default deterministic local-dev UUID `00000000-0000-0000-0000-000000000001`
-- Document this in the script's docstring
+**README updates (in `frontend/README.md`)**
+- "Local development" — npm install, env vars, npm run dev
+- "Deploy to Vercel" — the manual steps the human did
+- Project structure overview
 
-**Tests**
-- All 115 baseline tests continue passing (under test user override)
-- New test files:
-  - `tests/test_auth.py` — valid JWT extracts user_id; missing JWT → 401; invalid JWT → 401; expired JWT → 401
-  - `tests/test_isolation.py` — user A cannot read/modify/delete user B's expenses (covering all 16 endpoints); 404 on cross-user access
-  - `tests/test_admin_gate.py` — `POST /ml/train-categorizer` returns 404 when `ADMIN_ENABLED=false`
-  - `tests/test_migrations.py` — alembic upgrade head against in-memory SQLite produces the expected schema
-- conftest.py addition: override `get_current_user_id` with a fixed test UUID. Keep existing fixture surface intact.
+**CURRENT_STATE.md refresh (in repo root, the backend's CURRENT_STATE.md)**
+- Update to reflect Phase 3a auth.py changes (dual-algorithm, audience claim)
+- Add Phase 3b section: frontend repo structure, Vercel URL, env vars, Phase 3c plan
 
-**README**
-- "Production setup" section: Supabase project setup (already done by user; document for future), Cloud Run deploy steps, env var reference, JWT flow
-- "Local development": SQLite + seed + how to override test user
-- "Cold start expectations": one paragraph honestly explaining the 60-120s first-request latency on Cloud Run free tier
+### Out of scope (Phase 3c — do NOT build now)
+- Insights view (monthly + category narratives)
+- Stats charts (recharts integration, by-month, by-category visualizations)
+- ML feature demos: categorize tester UI, anomalies view, forecast view
+- Component tests (Vitest, React Testing Library)
+- E2E tests (Playwright)
+- Dark mode
+- User profile / settings page
+- Password reset, email confirmation flows
+- Social auth (Google, GitHub OAuth)
+- Advanced filters/search/pagination
+- CSV export
+- Internationalization (i18n)
+- Storybook
+- CI for the frontend (no GitHub Actions in 3b)
+- Custom domain on Vercel
 
-### Out of scope (Phase 3b or later)
-- Frontend (any UI framework)
-- Frontend deploy
-- Sign-up / login UI
-- Multi-currency, i18n
-- Per-user rate limiting on LLM endpoints
-- LLM response caching
-- Background jobs, queues
-- Webhooks, real-time
-- Email/push notifications
-- Admin UI
-- Observability beyond stdout logging (no Sentry, no Cloud Monitoring custom metrics)
-- Multi-region deploy
-- Secret Manager integration (deferred — plain env vars are fine for 3a)
-- Custom domain
-- CI/CD pipeline (manual deploy in 3a)
-- Cloud Run min-instances=1 (would cost money beyond free tier)
+## Tech stack additions (frontend only — none for backend in this iteration)
 
-## Tech stack additions
-- `pyjwt`
-- `psycopg2-binary`
-- `alembic`
+Frontend:
+- next@15.x
+- react@19.x
+- typescript@5.x
+- tailwindcss@4.x
+- @tanstack/react-query@5.x
+- @supabase/supabase-js@2.x
+- @supabase/ssr@latest
+- react-hook-form@7.x
+- zod@3.x
+- date-fns@3.x
+- lucide-react (transitive via shadcn)
+- shadcn/ui components (installed individually via CLI)
+- eslint, prettier, prettier-plugin-tailwindcss
 
-If the executor wants more, escalate.
+If executor wants others, escalate.
 
-## Architecture (additions and modifications)
+## Architecture (additions only)
 
 ```
 expense-tracker/
-├── Dockerfile                        # NEW
-├── .dockerignore                     # NEW
-├── alembic.ini                       # NEW
-├── migrations/                       # NEW
-│   ├── env.py
-│   ├── script.py.mako
-│   └── versions/
-│       ├── 001_baseline_schema.py
-│       └── 002_add_user_id.py
-├── app/
-│   ├── auth.py                       # NEW
-│   ├── main.py                       # MODIFIED — auth dep, CORS, logging
-│   ├── db.py                         # MODIFIED — DATABASE_URL env, NullPool for Postgres
-│   ├── models.py                     # MODIFIED — user_id column
-│   ├── config.py                     # MODIFIED — 6 new env vars
-│   ├── stats.py                      # MODIFIED — user_id scoping
-│   ├── insights.py                   # MODIFIED — user_id scoping
-│   └── ml/
-│       ├── anomaly.py                # MODIFIED — user_id scoping
-│       └── forecast.py               # MODIFIED — user_id scoping
-├── scripts/
-│   ├── seed.py                       # MODIFIED — --user-id arg
-│   └── deploy.sh                     # NEW (generated; user runs manually)
-└── tests/
-    ├── conftest.py                   # MODIFIED — auth dep override (additive only)
-    ├── test_auth.py                  # NEW
-    ├── test_isolation.py             # NEW
-    ├── test_admin_gate.py            # NEW
-    └── test_migrations.py            # NEW
+├── app/                                # UNCHANGED (backend)
+├── tests/                              # UNCHANGED (backend)
+├── migrations/                         # UNCHANGED
+├── frontend/                           # NEW (entire directory)
+│   ├── package.json
+│   ├── next.config.ts
+│   ├── tsconfig.json
+│   ├── tailwind.config.ts
+│   ├── postcss.config.mjs
+│   ├── components.json                 # shadcn config
+│   ├── .env.local                      # gitignored
+│   ├── .env.local.example
+│   ├── README.md
+│   ├── middleware.ts                   # auth protection
+│   ├── public/
+│   │   └── favicon.ico
+│   └── src/
+│       ├── app/
+│       │   ├── layout.tsx              # root layout + React Query provider
+│       │   ├── globals.css             # Tailwind base + shadcn vars
+│       │   ├── page.tsx                # root redirect
+│       │   ├── sign-in/page.tsx
+│       │   ├── sign-up/page.tsx
+│       │   └── (authenticated)/        # route group
+│       │       ├── layout.tsx          # nav + auth gate
+│       │       └── expenses/
+│       │           ├── page.tsx        # list
+│       │           ├── new/page.tsx    # add
+│       │           └── [id]/edit/page.tsx
+│       ├── components/
+│       │   ├── ui/                     # shadcn components live here
+│       │   ├── nav.tsx
+│       │   ├── nav-mobile.tsx
+│       │   ├── expense-list.tsx
+│       │   ├── expense-card-mobile.tsx
+│       │   ├── expense-form.tsx
+│       │   ├── nl-input.tsx            # hero NL input component
+│       │   └── providers.tsx           # React Query provider
+│       ├── lib/
+│       │   ├── supabase/
+│       │   │   ├── client.ts           # browser client
+│       │   │   └── server.ts           # server client (cookies)
+│       │   ├── api.ts                  # fetch wrapper with JWT
+│       │   ├── hooks/
+│       │   │   └── use-expenses.ts     # React Query hooks
+│       │   └── utils.ts                # cn() helper from shadcn
+│       └── types/
+│           └── expense.ts
+├── CURRENT_STATE.md                    # MODIFIED — refreshed for Phase 3a + 3b
+└── (backend files unchanged)
 ```
 
-conftest.py is load-bearing. Modification here is ADD-ONLY: add the new auth dependency override. Do not restructure existing fixtures. Escalate if anything else needs to change.
+## Verification commands (frontend)
 
-## Verification commands
+Frontend doesn't have a pytest equivalent in scope, so verification is build + lint + type check:
+
 ```yaml
-- name: tests
-  cmd: pytest -v
+- name: type-check
+  cmd: cd frontend && npx tsc --noEmit
   required: true
 - name: lint
+  cmd: cd frontend && npx next lint
+  required: true
+- name: build
+  cmd: cd frontend && npm run build
+  required: true
+```
+
+Backend verification (must still pass — no regression allowed):
+```yaml
+- name: backend-tests
+  cmd: pytest -v
+  required: true
+- name: backend-lint
   cmd: ruff check .
   required: true
-- name: types
+- name: backend-types
   cmd: mypy app
-  required: false
-- name: migrations
-  cmd: alembic upgrade head --sql
   required: false
 ```
 
-## Interactive checkpoints (orchestrator pauses, asks human to act)
+## Subagent usage rules
+- `executor` for all frontend file writes
+- `verifier` for tests/lint/types/build
+- Orchestrator does NOT write code
 
-These are SCHEDULED human-action steps, not escalations:
+## Interactive checkpoints
 
-**Checkpoint A — pre-iteration (already done by user):** Supabase project exists, `.env` populated with DATABASE_URL, SUPABASE_JWT_SECRET, SUPABASE_URL. Orchestrator confirms by reading `.env.example` and asking the user to confirm corresponding values are in `.env` (without printing them).
+**Checkpoint A — after step 1 (CURRENT_STATE refresh):** Human confirms the refreshed CURRENT_STATE.md accurately captures Phase 3a state. Replies "approved" or with concerns.
 
-**Checkpoint B — after step 5 (Alembic init):** Orchestrator pauses. Asks the human to inspect the generated migration files (`migrations/versions/001_*.py` and `002_*.py`) before proceeding. The human eyeballs them, confirms they look right (table creation + user_id addition, no surprise drop/alter operations on unrelated columns), and replies "approved" or with specific concerns.
+**Checkpoint B — after step 4 (Supabase client + auth pages working locally):** Human runs `cd frontend && npm run dev` and manually tests:
+1. Visit http://localhost:3000 → redirects to /sign-in
+2. Sign up with a new test email (e.g. ph3b-test@expense-tracker.local) and password
+3. After sign-up, redirect to /expenses (empty list)
+4. Sign out → back to /sign-in
+5. Sign in with the same credentials → back to /expenses
+Human pastes back: "auth flow works" or specific errors with screenshots/console output.
 
-**Checkpoint C — after step 8 (Dockerfile + deploy.sh generated):** Orchestrator pauses with explicit gcloud commands for the human to run. Specifically:
-1. Confirm `gcloud config get-value project` matches the desired GCP project
-2. Run `gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com` if not already enabled
-3. Run `bash scripts/deploy.sh` (or the equivalent gcloud command directly if on PowerShell — the orchestrator should also generate `scripts/deploy.ps1` for Windows convenience)
-4. Wait for build (typically 5-10 min for first build with torch)
-5. Paste back the resulting Cloud Run URL (format: `https://expense-tracker-xxxxx-uc.a.run.app`)
+**Checkpoint C — after step 8 (all CRUD pages working locally):** Human runs the dev server and tests the full CRUD loop end-to-end at localhost:3000. Specifically:
+1. Add expense via natural-language input: "lunch 250"
+2. Verify it appears in the list
+3. Click edit → change amount → save → verify in list
+4. Click delete → confirm → verify gone from list
+Human reports back: "CRUD works" or issues.
 
-**Checkpoint D — after deploy:** Orchestrator runs a live smoke against the deployed URL:
-- `GET /health` (expect 200; first request will be slow — 60-120s — that's the cold start)
-- `GET /expenses` without auth (expect 401)
-- Captures both to `eval-results/phase3a-deploy-smoke-YYYYMMDD.md`
+**Checkpoint D — Vercel project setup (human action):**
+Orchestrator pauses with instructions:
+1. Go to vercel.com/new
+2. Import the expense-tracker repo from GitHub
+3. Configure project:
+   - Root Directory: `frontend`
+   - Framework Preset: Next.js (auto-detected)
+   - Build/Output settings: defaults
+4. Environment Variables (Production + Preview):
+   - `NEXT_PUBLIC_SUPABASE_URL` = (paste from .env)
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = (paste from .env)
+   - `NEXT_PUBLIC_API_BASE_URL` = `https://expense-tracker-242393598566.us-central1.run.app`
+5. Deploy
+6. Paste back the production URL (format: `https://<project-name>.vercel.app`)
 
-## Escalation rules (orchestrator must ask before doing)
-- Ask before installing dependencies beyond the three listed
-- Ask if any existing test from the 115 baseline starts failing (modulo expected conftest auth override changes)
-- Ask if Alembic autogeneration produces unexpected schema operations
-- Ask if Supabase Postgres connection fails when running migrations locally
-- Ask if any endpoint contract changes in a way that breaks existing clients
-- Ask if Dockerfile build fails locally (test with `docker build .` before deploy if Docker is available)
-- Ask if Cloud Run deploy returns a non-2xx during the live smoke after a reasonable cold-start wait (≥120s)
-- Ask if the deployed app returns 500 on the first authenticated request (could be migration not run, env var missing, etc.)
-- Request `/cost` checkpoints after step 3 (auth implemented + baseline tests green) and after Checkpoint D (deploy live). State: "please run /cost and paste the figure before I continue"
+**Checkpoint E — CORS update on Cloud Run (orchestrator runs gcloud directly):**
+Once Vercel URL is known, orchestrator runs:
+```
+gcloud run services update expense-tracker --region us-central1 --update-env-vars "CORS_ALLOWED_ORIGINS=https://<vercel-url>,http://localhost:3000"
+```
 
-## Hard rules (do not violate)
-- Do NOT modify app/llm.py
-- Do NOT change get_db signature
-- Do NOT commit any secret to git
-- Do NOT remove or rename existing files
-- Do NOT skip Alembic in favor of `metadata.create_all` against Postgres
-- Do NOT make real Supabase/Cloud-Run/Groq calls inside pytest
-- Do NOT use `python-jose` for JWT — `pyjwt` only
-- Do NOT use asyncpg — sync everywhere (psycopg2)
-- Do NOT add CUDA-enabled torch to the Dockerfile — CPU-only
+**Checkpoint F — Live e2e smoke (human-driven, orchestrator-guided):**
+Human opens the production Vercel URL in a browser, runs through the full flow (sign up, add expense via NL, edit, delete, sign out). Reports any failures with browser console output. Orchestrator captures the result to `eval-results/phase3b-frontend-smoke-YYYYMMDD.md`.
+
+## Escalation rules
+- Ask before installing any frontend dependency beyond those listed
+- Ask if Next.js version detected isn't 15.x
+- Ask if any backend test starts failing (this iteration should not touch backend code)
+- Ask if Vercel build fails
+- Ask if Supabase auth flow fails after Checkpoint B
+- Ask if any CRUD operation fails after Checkpoint C
+- Ask if CORS blocks the deployed frontend from reaching the backend
+- Ask if React Query/Supabase SSR setup produces hydration warnings
+
+## Hard rules
+- Do NOT modify any backend code (`app/`, `tests/`, `migrations/`, root pyproject.toml, etc.)
+- The CORS update is the ONLY backend change permitted, and only via `gcloud run services update` (env var only — no code/deploy)
+- Do NOT commit any frontend `.env.local` file
+- Do NOT commit Supabase anon key into source (only into .env.local.example as a placeholder)
+- Do NOT add any feature listed in "Out of scope" speculatively
+- Do NOT use Pages Router — App Router only
+- Do NOT use any deprecated Next.js APIs (no `getServerSideProps`, no `getStaticProps`)
+- Do NOT install jest, vitest, playwright, cypress — testing is Phase 3c
 
 ## Budget
-- Soft target: 120-180 minutes
-- Hard cap: 25 executor invocations
-- Cost-equivalent estimate: $15-22
+- Soft target: 120-150 minutes
+- Hard cap: 18 executor invocations
+- Cost-equivalent estimate: $14-22
+- /cost checkpoints after step 4 (auth working locally) and after Checkpoint E (CORS updated, ready for live smoke)
 
 ## Success criteria (orchestrator: verify ALL before declaring done)
-- All endpoints except `GET /health` require valid JWT (401 without, 401 with invalid, 401 with expired)
-- User A cannot read/modify/delete user B's data (verified via test_isolation.py covering all 16 endpoints)
-- `POST /ml/train-categorizer` returns 404 when `ADMIN_ENABLED=false`
-- Alembic migrations from scratch produce schema matching SQLAlchemy models (no drift)
-- App boots cleanly against both SQLite (local) and Postgres (prod) via DATABASE_URL switching
-- 115 baseline tests still pass under updated conftest
-- At least 12 new tests added across test_auth.py, test_isolation.py, test_admin_gate.py, test_migrations.py
-- pytest -v: ≥127 tests, 0 fail; ruff clean; mypy clean
-- Cloud Run deploy is live; `GET /health` against the cloud-run URL returns 200 (after cold start wait)
-- `GET /expenses` without JWT against the deployed URL returns 401
-- `eval-results/phase3a-deploy-smoke-YYYYMMDD.md` captured
-- `CURRENT_STATE.md` refreshed: Phase 3a complete, live Cloud Run URL, new env vars, auth model documented, Phase 3b plan outlined
-- `.env.example` lists ALL env vars with comments
-- README has Production setup + Local development + Cold start expectations sections
-- Dockerfile uses CPU-only torch (verify in the file)
+- Backend tests still 141/141 pass; ruff clean; mypy clean (no backend regression)
+- `cd frontend && npm run build` succeeds with no errors
+- `cd frontend && npx tsc --noEmit` clean
+- `cd frontend && npx next lint` clean
+- Locally: sign-up, sign-in, sign-out flow works (Checkpoint B passed)
+- Locally: full CRUD loop works (Checkpoint C passed)
+- Vercel production deploy live, URL reachable
+- Live e2e flow on the Vercel URL works end-to-end (Checkpoint F captured to eval artifact)
+- Mobile responsive verified on at least one screen size (Chrome devtools mobile emulation; capture screenshot or note in the smoke artifact)
+- CURRENT_STATE.md refreshed: Phase 3a + 3b state captured, frontend URL noted, Phase 3c plan outlined
+- frontend/README.md exists with local dev + deploy steps
+- All commits trailer-free, conventionally named, one logical change per commit (likely 8-12 commits)
+- `eval-results/phase3b-frontend-smoke-YYYYMMDD.md` exists
 
 ## Build order
-1. Add deps (pyjwt, psycopg2-binary, alembic) to pyproject.toml. Add 6 new env vars to app/config.py. Update .env.example. Verify 115 tests still pass.
-2. `app/auth.py` with JWT validation + `get_current_user_id` dep. test_auth.py with mocked JWT scenarios. **[CHECKPOINT A: confirm .env values present]**
-3. Update conftest.py to override `get_current_user_id` (additive). Verify 115 baseline tests still pass under override. **[ask user for /cost]**
-4. Modify Expense model + all query sites for user_id scoping. Update scripts/seed.py for --user-id. test_isolation.py covering all 16 endpoints.
-5. Initialize Alembic. Migration 001 (baseline), migration 002 (add user_id). test_migrations.py verifies upgrade-from-empty produces expected schema. **[CHECKPOINT B: human reviews migrations]**
-6. app/db.py: switch to DATABASE_URL env var; NullPool for Postgres URLs; SQLite default. Verify local tests still pass with SQLite.
-7. CORS middleware. Replace `print` with `logging` module. Admin gate for /ml/train-categorizer. test_admin_gate.py. Final pre-deploy verification: all tests pass, lint + types clean.
-8. Generate Dockerfile (CPU-only torch), .dockerignore, scripts/deploy.sh, scripts/deploy.ps1. Document deploy steps in README. **[CHECKPOINT C: human runs deploy, pastes URL back]**
-9. Live smoke against Cloud Run URL. Capture to eval-results/phase3a-deploy-smoke-<date>.md. **[CHECKPOINT D, ask user for /cost]**
-10. Refresh CURRENT_STATE.md with deploy URL, new env vars, auth model, Phase 3b plan.
-11. Final success-criteria walkthrough.
+1. **Refresh CURRENT_STATE.md** first — capture Phase 3a state (dual-algo auth, deployed URL, etc.) BEFORE starting frontend work. **[CHECKPOINT A]**
+2. Initialize Next.js 15 in `frontend/`: `npx create-next-app@latest frontend --typescript --tailwind --app --eslint --src-dir --import-alias "@/*"`. Add to root .gitignore: `frontend/.env.local`, `frontend/node_modules`, `frontend/.next`.
+3. Install shadcn/ui (`npx shadcn@latest init`) + components listed in spec. Install Supabase JS + ssr + React Query + react-hook-form + zod + date-fns.
+4. Build Supabase client (lib/supabase/), API client (lib/api.ts), TypeScript types (types/expense.ts), providers (components/providers.tsx). Wire React Query provider into root layout. Build sign-in + sign-up pages with shadcn forms. Build middleware.ts for route protection. Build the (authenticated) route group layout with a placeholder nav. Test locally. **[CHECKPOINT B + cost check]**
+5. Build the nav component (desktop + mobile hamburger variants). Wire sign-out action.
+6. Build expense list page (`/expenses`): desktop table + mobile cards, loading/empty/error states.
+7. Build add expense page (`/expenses/new`): NL input as hero, manual form as collapsible secondary. Wire mutations.
+8. Build edit expense page (`/expenses/[id]/edit`): pre-filled form, save + delete with confirm dialog. **[CHECKPOINT C]**
+9. Final local verification: build clean, type-check clean, lint clean. README.md in frontend/. Push to GitHub.
+10. **[CHECKPOINT D]** Vercel setup (human creates project, sets env vars, deploys, returns URL).
+11. **[CHECKPOINT E]** CORS update on Cloud Run via gcloud (orchestrator runs).
+12. **[CHECKPOINT F + cost check]** Live smoke test on the Vercel URL (human-driven, orchestrator-guided). Capture artifact.
+13. Update CURRENT_STATE.md with deployed Vercel URL and Phase 3c plan. Final success-criteria walkthrough.
