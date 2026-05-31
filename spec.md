@@ -1,212 +1,98 @@
-# Project Spec: expense-tracker — Phase 3b (frontend foundation + auth + CRUD + deploy)
+# Project Spec: expense-tracker — Phase 3b.1 (auth flow hardening + E2E tests)
 
 ## Goal
 
-Build a Next.js 15 frontend on top of the live Cloud Run backend. Ship a minimum viable product: users sign up via Supabase Auth, log in, add expenses (natural-language input as the hero interaction), view their expenses, edit, delete. Mobile-responsive throughout. Deploy to Vercel free tier. At the end of Phase 3b, the product is usable by a friend with a sign-up link — fully end-to-end.
+Sign-in and sign-out are not working reliably on the deployed app. This iteration: (1) diagnose the actual auth flow bug(s), (2) pull Playwright forward from Phase 3c to add automated E2E tests covering auth scenarios, (3) fix the bugs, (4) prove the full auth flow works locally across multiple scenarios. Human validates on Vercel only after local E2E passes green.
 
-ML feature demos (categorize tester, anomalies, forecast) and insights/charts are OUT OF SCOPE (Phase 3c).
+The auth experience must be smooth and regression-protected before any further frontend work.
 
 ## Current state (read-only context)
-See CURRENT_STATE.md (post-Phase-3a). Key facts:
-- Backend live at https://expense-tracker-242393598566.us-central1.run.app
-- Supabase project active; ES256 JWT signing (dual-algorithm validator in app/auth.py handles both ES256 and HS256)
-- 141/141 backend tests pass, ruff + mypy clean
-- 16 backend endpoints, all require JWT except /health
-- User-scoped data isolation verified end-to-end (test_isolation.py + live e2e artifact)
-- Test user `test@expense-tracker.local` exists in Supabase Auth
-- All Phase 1/2/2.6 features working live
+See CURRENT_STATE.md. Key facts:
+- Frontend: Next.js 16 (App Router), @supabase/ssr for auth, proxy.ts (NOT middleware.ts) for route protection, TanStack Query for data
+- Backend live on Cloud Run; dual-algorithm JWT auth; CORS allows the Vercel prod URL + localhost:3000
+- Known-good: backend health, CORS config, NEXT_PUBLIC_API_BASE_URL now set in Vercel (data calls fixed in prior session)
+- A manually-created, auto-confirmed Supabase test user exists (e.g. smoke3@expense-tracker.local)
+- Supabase email sign-up is rate-limited on free tier — auth testing must use PRE-CREATED users + sign-IN, never programmatic sign-up
 
-This iteration adds the `frontend/` directory at repo root alongside existing `app/`, `tests/`, etc. No backend code changes EXCEPT a CORS allowlist update.
+## Symptom (to reproduce and diagnose)
+"Sign in and sign out not working properly." Specifics unknown — the orchestrator must reproduce and characterize the exact failure before fixing. Common Next 16 + @supabase/ssr + proxy.ts failure modes to investigate:
+- Session cookie not refreshed/persisted by proxy.ts (logged out on reload)
+- Sign-out clears client state but not server cookies (still "logged in" after)
+- Redirect logic reading stale session state (flash of wrong page, or no redirect)
+- Browser vs server Supabase client created in the wrong context
+- Cookie sameSite/secure/domain misconfiguration
+- proxy.ts matcher not covering the right routes
 
 ## Scope
 
-### In scope (Phase 3b)
+### In scope (Phase 3b.1)
+**Diagnosis**
+- Read the auth implementation: proxy.ts, the Supabase client factories (lib/supabase/client.ts + server.ts), sign-in page handler, sign-out action, the authenticated layout's auth gate
+- Identify the specific defect(s) causing unreliable sign-in/sign-out
+- Report the root cause with evidence before fixing
 
-**Project scaffolding**
-- New `frontend/` directory at repo root
-- Next.js 15.x with App Router, TypeScript (strict mode), Tailwind CSS, ESLint
-- shadcn/ui initialized (`components.json` configured)
-- Install minimum shadcn components needed: button, input, label, card, form, dialog, dropdown-menu, toast, separator, skeleton, table
-- TanStack Query (@tanstack/react-query) for server state
-- Supabase JS client (@supabase/supabase-js)
-- @supabase/ssr for Next.js App Router integration
-- lucide-react (comes with shadcn) for icons
-- date-fns for date formatting (lightweight)
+**Playwright setup (pulled forward from Phase 3c)**
+- Install Playwright in frontend/ (@playwright/test + browser binaries)
+- `frontend/playwright.config.ts` — configured to start the dev server (or test against an already-running one), Chromium project, baseURL http://localhost:3000
+- Test credentials via a gitignored `frontend/.env.test.local` (TEST_USER_EMAIL, TEST_USER_PASSWORD); committed `.env.test.local.example` template
+- npm script `test:e2e` → `playwright test`
+- gitignore: add `frontend/.env.test.local`, `frontend/test-results/`, `frontend/playwright-report/`
 
-**Auth (Supabase via custom shadcn forms)**
-- `/sign-in` page — email + password form, "Sign in" button, link to /sign-up
-- `/sign-up` page — email + password form, "Create account" button, link to /sign-in
-- Form validation via react-hook-form + zod (shadcn standard)
-- Both forms use shadcn Form + Input + Button components
-- Auth calls go through Supabase JS client; session stored via @supabase/ssr (cookies, SSR-safe)
-- Auth state available via a `useUser()` hook
-- Middleware (`middleware.ts`) protects authenticated routes — unauthenticated users hitting protected paths redirect to /sign-in
-- Sign-out action in the nav
+**E2E auth tests (`frontend/e2e/auth.spec.ts`)** — cover these scenarios:
+1. Sign in with valid credentials → redirects to /expenses, user is authenticated
+2. Sign in with invalid credentials → error message shown, stays on /sign-in
+3. Sign in with empty/invalid fields → client validation error, no submit
+4. Session persists across page reload → reload /expenses while signed in stays on /expenses (does NOT bounce to /sign-in)
+5. Sign out → redirects to /sign-in AND session is actually cleared
+6. After sign out, direct-navigate to /expenses → redirects to /sign-in (cookie truly gone)
+7. Direct-navigate to /expenses while logged out → redirects to /sign-in
+8. Direct-navigate to /sign-in while logged in → redirects to /expenses
+9. (if applicable) Rapid sign-in → sign-out → sign-in does not leave stale session
 
-**API client layer**
-- `frontend/src/lib/api.ts` — fetch wrapper that:
-  - Reads JWT from current Supabase session
-  - Adds `Authorization: Bearer <token>` to all requests
-  - Reads base URL from `NEXT_PUBLIC_API_BASE_URL` env var
-  - Throws typed errors on non-2xx (so React Query handles them cleanly)
-- TypeScript types in `frontend/src/types/expense.ts` mirroring the backend's Pydantic schemas — Expense, ExpenseCreate, ExpenseUpdate, ParsedExpense, TextInput
-- React Query hooks in `frontend/src/lib/hooks/`:
-  - `useExpenses()` — list with optional filters
-  - `useExpense(id)` — single
-  - `useCreateExpense()`, `useCreateFromText()`, `useUpdateExpense()`, `useDeleteExpense()` mutations
-  - Mutations invalidate the list query on success
+**Bug fixes**
+- Fix the auth defect(s) found in diagnosis so all 9 scenarios pass
+- Fixes likely live in proxy.ts (session refresh), the sign-out handler (proper supabase.auth.signOut() + cookie clearing + redirect), and/or the Supabase server client cookie wiring
+- Keep changes minimal and targeted — this is hardening, not a rewrite
 
-**Pages (5 screens)**
-- `/` (root) — redirects to /expenses if signed in, /sign-in if not
-- `/sign-in` and `/sign-up` (already covered above)
-- `/expenses` (list view, authenticated)
-  - Desktop: table with columns: occurred_at, category, description, amount, actions
-  - Mobile: stacked cards
-  - Empty state ("No expenses yet — add your first")
-  - Loading skeleton while fetching
-  - Error state with retry button
-- `/expenses/new` (add view, authenticated)
-  - HERO: large natural-language input (textarea + "Parse & Add" button) — uses POST /expenses/from-text
-  - SECONDARY: collapsible "Add manually" form below — uses POST /expenses
-  - On success: toast notification, redirect to /expenses
-  - On error: toast with error detail
-- `/expenses/[id]/edit` (edit view, authenticated)
-  - Pre-filled form with all fields
-  - Save (PATCH) + Delete (with confirm dialog) + Cancel
-  - On save/delete: toast + redirect to /expenses
+### Out of scope (Phase 3c or later)
+- E2E tests for expense CRUD (separate, Phase 3c)
+- Component/unit tests (Vitest, React Testing Library)
+- CI integration (GitHub Actions)
+- Testing the sign-UP form flow (email rate-limited; use pre-created users)
+- Password reset, email confirmation, social auth
+- Any non-auth feature work
+- Production/Vercel testing by the orchestrator (human does that)
+- Visual regression testing
 
-**Layout & navigation**
-- Authenticated routes share a layout with a top nav bar
-- Nav contents: app name/logo (text is fine), "Expenses" link, "Add expense" button, user email + sign-out menu
-- Desktop: horizontal nav bar
-- Mobile: hamburger menu (sheet/drawer) opening from the left
+## Tech stack additions (frontend)
+- @playwright/test
+- (Playwright browser binaries via `npx playwright install chromium`)
 
-**Mobile responsiveness (must work cleanly)**
-- All pages tested mentally at 360px wide
-- Touch targets ≥44px (Tailwind's default sizing on buttons/inputs satisfies this)
-- Tables → cards transition at md: breakpoint
-- Forms stack vertically on small screens
-- Nav collapses to hamburger below md:
+No other deps. If the orchestrator wants more, escalate.
 
-**Backend update (single env var change, no code change)**
-- After Vercel preview/prod URLs are known, update Cloud Run's `CORS_ALLOWED_ORIGINS` env var to include them
-- Specifically: `https://<your-vercel-prod>.vercel.app` + `https://<your-vercel-preview>.vercel.app` + `http://localhost:3000`
-- Done via `gcloud run services update` — no redeploy from source needed
-- Orchestrator generates the exact command; human runs it at the interactive checkpoint
-
-**Environment variables (frontend)**
-- `NEXT_PUBLIC_SUPABASE_URL` (same as backend's SUPABASE_URL)
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY` (the anon/public key from Supabase Settings → API)
-- `NEXT_PUBLIC_API_BASE_URL` (https://expense-tracker-242393598566.us-central1.run.app)
-- `.env.local.example` committed with placeholders; `.env.local` in .gitignore
-- Same three vars set in Vercel project's Environment Variables settings (Production + Preview)
-
-**README updates (in `frontend/README.md`)**
-- "Local development" — npm install, env vars, npm run dev
-- "Deploy to Vercel" — the manual steps the human did
-- Project structure overview
-
-**CURRENT_STATE.md refresh (in repo root, the backend's CURRENT_STATE.md)**
-- Update to reflect Phase 3a auth.py changes (dual-algorithm, audience claim)
-- Add Phase 3b section: frontend repo structure, Vercel URL, env vars, Phase 3c plan
-
-### Out of scope (Phase 3c — do NOT build now)
-- Insights view (monthly + category narratives)
-- Stats charts (recharts integration, by-month, by-category visualizations)
-- ML feature demos: categorize tester UI, anomalies view, forecast view
-- Component tests (Vitest, React Testing Library)
-- E2E tests (Playwright)
-- Dark mode
-- User profile / settings page
-- Password reset, email confirmation flows
-- Social auth (Google, GitHub OAuth)
-- Advanced filters/search/pagination
-- CSV export
-- Internationalization (i18n)
-- Storybook
-- CI for the frontend (no GitHub Actions in 3b)
-- Custom domain on Vercel
-
-## Tech stack additions (frontend only — none for backend in this iteration)
-
-Frontend:
-- next@15.x
-- react@19.x
-- typescript@5.x
-- tailwindcss@4.x
-- @tanstack/react-query@5.x
-- @supabase/supabase-js@2.x
-- @supabase/ssr@latest
-- react-hook-form@7.x
-- zod@3.x
-- date-fns@3.x
-- lucide-react (transitive via shadcn)
-- shadcn/ui components (installed individually via CLI)
-- eslint, prettier, prettier-plugin-tailwindcss
-
-If executor wants others, escalate.
-
-## Architecture (additions only)
-
+## Architecture (additions + likely modifications)
 ```
-expense-tracker/
-├── app/                                # UNCHANGED (backend)
-├── tests/                              # UNCHANGED (backend)
-├── migrations/                         # UNCHANGED
-├── frontend/                           # NEW (entire directory)
-│   ├── package.json
-│   ├── next.config.ts
-│   ├── tsconfig.json
-│   ├── tailwind.config.ts
-│   ├── postcss.config.mjs
-│   ├── components.json                 # shadcn config
-│   ├── .env.local                      # gitignored
-│   ├── .env.local.example
-│   ├── README.md
-│   ├── middleware.ts                   # auth protection
-│   ├── public/
-│   │   └── favicon.ico
-│   └── src/
-│       ├── app/
-│       │   ├── layout.tsx              # root layout + React Query provider
-│       │   ├── globals.css             # Tailwind base + shadcn vars
-│       │   ├── page.tsx                # root redirect
-│       │   ├── sign-in/page.tsx
-│       │   ├── sign-up/page.tsx
-│       │   └── (authenticated)/        # route group
-│       │       ├── layout.tsx          # nav + auth gate
-│       │       └── expenses/
-│       │           ├── page.tsx        # list
-│       │           ├── new/page.tsx    # add
-│       │           └── [id]/edit/page.tsx
-│       ├── components/
-│       │   ├── ui/                     # shadcn components live here
-│       │   ├── nav.tsx
-│       │   ├── nav-mobile.tsx
-│       │   ├── expense-list.tsx
-│       │   ├── expense-card-mobile.tsx
-│       │   ├── expense-form.tsx
-│       │   ├── nl-input.tsx            # hero NL input component
-│       │   └── providers.tsx           # React Query provider
-│       ├── lib/
-│       │   ├── supabase/
-│       │   │   ├── client.ts           # browser client
-│       │   │   └── server.ts           # server client (cookies)
-│       │   ├── api.ts                  # fetch wrapper with JWT
-│       │   ├── hooks/
-│       │   │   └── use-expenses.ts     # React Query hooks
-│       │   └── utils.ts                # cn() helper from shadcn
-│       └── types/
-│           └── expense.ts
-├── CURRENT_STATE.md                    # MODIFIED — refreshed for Phase 3a + 3b
-└── (backend files unchanged)
+frontend/
+├── playwright.config.ts            # NEW
+├── .env.test.local                 # NEW (gitignored) — test user creds
+├── .env.test.local.example         # NEW (committed)
+├── e2e/
+│   └── auth.spec.ts                # NEW — 9 auth scenarios
+├── package.json                    # MODIFIED — test:e2e script, @playwright/test dep
+├── proxy.ts                        # LIKELY MODIFIED — session refresh fix
+└── src/
+    ├── lib/supabase/
+    │   ├── client.ts               # POSSIBLY MODIFIED
+    │   └── server.ts               # POSSIBLY MODIFIED
+    ├── app/sign-in/                # POSSIBLY MODIFIED — handler/error display
+    └── components/                 # POSSIBLY MODIFIED — sign-out action
 ```
 
-## Verification commands (frontend)
-
-Frontend doesn't have a pytest equivalent in scope, so verification is build + lint + type check:
-
+## Verification commands
 ```yaml
+- name: e2e-auth
+  cmd: cd frontend && npx playwright test
+  required: true
 - name: type-check
   cmd: cd frontend && npx tsc --noEmit
   required: true
@@ -216,121 +102,65 @@ Frontend doesn't have a pytest equivalent in scope, so verification is build + l
 - name: build
   cmd: cd frontend && npm run build
   required: true
-```
-
-Backend verification (must still pass — no regression allowed):
-```yaml
 - name: backend-tests
   cmd: pytest -v
-  required: true
-- name: backend-lint
-  cmd: ruff check .
-  required: true
-- name: backend-types
-  cmd: mypy app
-  required: false
+  required: true  # must not regress
 ```
 
 ## Subagent usage rules
-- `executor` for all frontend file writes
-- `verifier` for tests/lint/types/build
+- `executor` for all code/config writes
+- `verifier` for running Playwright, type-check, lint, build, backend tests
 - Orchestrator does NOT write code
 
-## Interactive checkpoints
+## Interactive checkpoints (human action — only where CC cannot proceed)
+**Checkpoint A — test credentials (required before E2E can run):**
+The orchestrator cannot know a Supabase user's password. It pauses and asks the human to:
+1. Confirm an auto-confirmed test user exists in Supabase (or create one via dashboard: Authentication → Users → Add user → Auto Confirm)
+2. Create `frontend/.env.test.local` with:
+   TEST_USER_EMAIL=<the test user email>
+   TEST_USER_PASSWORD=<that user's password>
+3. Confirm back that the file exists (without pasting the password into chat)
 
-**Checkpoint A — after step 1 (CURRENT_STATE refresh):** Human confirms the refreshed CURRENT_STATE.md accurately captures Phase 3a state. Replies "approved" or with concerns.
-
-**Checkpoint B — after step 4 (Supabase client + auth pages working locally):** Human runs `cd frontend && npm run dev` and manually tests:
-1. Visit http://localhost:3000 → redirects to /sign-in
-2. Sign up with a new test email (e.g. ph3b-test@expense-tracker.local) and password
-3. After sign-up, redirect to /expenses (empty list)
-4. Sign out → back to /sign-in
-5. Sign in with the same credentials → back to /expenses
-Human pastes back: "auth flow works" or specific errors with screenshots/console output.
-
-**Checkpoint C — after step 8 (all CRUD pages working locally):** Human runs the dev server and tests the full CRUD loop end-to-end at localhost:3000. Specifically:
-1. Add expense via natural-language input: "lunch 250"
-2. Verify it appears in the list
-3. Click edit → change amount → save → verify in list
-4. Click delete → confirm → verify gone from list
-Human reports back: "CRUD works" or issues.
-
-**Checkpoint D — Vercel project setup (human action):**
-Orchestrator pauses with instructions:
-1. Go to vercel.com/new
-2. Import the expense-tracker repo from GitHub
-3. Configure project:
-   - Root Directory: `frontend`
-   - Framework Preset: Next.js (auto-detected)
-   - Build/Output settings: defaults
-4. Environment Variables (Production + Preview):
-   - `NEXT_PUBLIC_SUPABASE_URL` = (paste from .env)
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = (paste from .env)
-   - `NEXT_PUBLIC_API_BASE_URL` = `https://expense-tracker-242393598566.us-central1.run.app`
-5. Deploy
-6. Paste back the production URL (format: `https://<project-name>.vercel.app`)
-
-**Checkpoint E — CORS update on Cloud Run (orchestrator runs gcloud directly):**
-Once Vercel URL is known, orchestrator runs:
-```
-gcloud run services update expense-tracker --region us-central1 --update-env-vars "CORS_ALLOWED_ORIGINS=https://<vercel-url>,http://localhost:3000"
-```
-
-**Checkpoint F — Live e2e smoke (human-driven, orchestrator-guided):**
-Human opens the production Vercel URL in a browser, runs through the full flow (sign up, add expense via NL, edit, delete, sign out). Reports any failures with browser console output. Orchestrator captures the result to `eval-results/phase3b-frontend-smoke-YYYYMMDD.md`.
+**Checkpoint B — Vercel validation (after local E2E green):**
+Once all 9 scenarios pass locally, the human manually validates sign-in/sign-out on the live Vercel URL (https://expense-tracker-tawny-eight-98.vercel.app), since the orchestrator cannot see the live browser. If a bug only manifests in production (e.g. cookie secure/sameSite differences over HTTPS), human reports it and the orchestrator fixes.
 
 ## Escalation rules
-- Ask before installing any frontend dependency beyond those listed
-- Ask if Next.js version detected isn't 15.x
-- Ask if any backend test starts failing (this iteration should not touch backend code)
-- Ask if Vercel build fails
-- Ask if Supabase auth flow fails after Checkpoint B
-- Ask if any CRUD operation fails after Checkpoint C
-- Ask if CORS blocks the deployed frontend from reaching the backend
-- Ask if React Query/Supabase SSR setup produces hydration warnings
+- Ask before installing any dep beyond @playwright/test
+- Ask if Playwright browser install fails (large download; network/proxy issues possible on Windows)
+- Ask if any backend test regresses (this iteration should not touch backend)
+- Ask if the auth bug appears to require a change to the backend auth (it should not — backend auth is verified working)
+- Ask if a fix would change the Supabase client public API used elsewhere
+- Ask if reproducing the bug requires the live Vercel environment (i.e. can't repro locally) — then it's a Checkpoint B finding
 
 ## Hard rules
-- Do NOT modify any backend code (`app/`, `tests/`, `migrations/`, root pyproject.toml, etc.)
-- The CORS update is the ONLY backend change permitted, and only via `gcloud run services update` (env var only — no code/deploy)
-- Do NOT commit any frontend `.env.local` file
-- Do NOT commit Supabase anon key into source (only into .env.local.example as a placeholder)
-- Do NOT add any feature listed in "Out of scope" speculatively
-- Do NOT use Pages Router — App Router only
-- Do NOT use any deprecated Next.js APIs (no `getServerSideProps`, no `getStaticProps`)
-- Do NOT install jest, vitest, playwright, cypress — testing is Phase 3c
+- Do NOT touch backend code (app/, tests/, migrations/)
+- Do NOT test or fix the sign-UP form (email-rate-limited; out of scope)
+- Do NOT commit .env.test.local or any password
+- Do NOT make the auth fix a rewrite — minimal, targeted changes only
+- Use proxy.ts (Next 16), never create middleware.ts
+- Use the current @supabase/ssr cookie pattern (createBrowserClient / createServerClient), not deprecated auth-helpers
 
 ## Budget
-- Soft target: 120-150 minutes
-- Hard cap: 18 executor invocations
-- Cost-equivalent estimate: $14-22
-- /cost checkpoints after step 4 (auth working locally) and after Checkpoint E (CORS updated, ready for live smoke)
+- Soft target: 60-90 minutes
+- Hard cap: 14 executor invocations
+- Playwright browser download is a one-time cost; not counted against pace
 
 ## Success criteria (orchestrator: verify ALL before declaring done)
-- Backend tests still 141/141 pass; ruff clean; mypy clean (no backend regression)
-- `cd frontend && npm run build` succeeds with no errors
-- `cd frontend && npx tsc --noEmit` clean
-- `cd frontend && npx next lint` clean
-- Locally: sign-up, sign-in, sign-out flow works (Checkpoint B passed)
-- Locally: full CRUD loop works (Checkpoint C passed)
-- Vercel production deploy live, URL reachable
-- Live e2e flow on the Vercel URL works end-to-end (Checkpoint F captured to eval artifact)
-- Mobile responsive verified on at least one screen size (Chrome devtools mobile emulation; capture screenshot or note in the smoke artifact)
-- CURRENT_STATE.md refreshed: Phase 3a + 3b state captured, frontend URL noted, Phase 3c plan outlined
-- frontend/README.md exists with local dev + deploy steps
-- All commits trailer-free, conventionally named, one logical change per commit (likely 8-12 commits)
-- `eval-results/phase3b-frontend-smoke-YYYYMMDD.md` exists
+- Root cause of the sign-in/sign-out issue identified and documented
+- Playwright installed and configured; `npx playwright test` runs
+- All 9 auth E2E scenarios pass locally, green
+- The specific bug(s) fixed with minimal, targeted changes
+- type-check clean, lint clean, build succeeds
+- Backend tests still pass (no regression)
+- .env.test.local gitignored; .env.test.local.example committed
+- A short writeup of the root cause + fix added to CURRENT_STATE.md (or a new eval-results/phase3b1-auth-fix-YYYYMMDD.md artifact)
+- Human has validated the fix on the live Vercel URL (Checkpoint B) — sign-in, reload-persists, sign-out, re-sign-in all smooth
 
 ## Build order
-1. **Refresh CURRENT_STATE.md** first — capture Phase 3a state (dual-algo auth, deployed URL, etc.) BEFORE starting frontend work. **[CHECKPOINT A]**
-2. Initialize Next.js 15 in `frontend/`: `npx create-next-app@latest frontend --typescript --tailwind --app --eslint --src-dir --import-alias "@/*"`. Add to root .gitignore: `frontend/.env.local`, `frontend/node_modules`, `frontend/.next`.
-3. Install shadcn/ui (`npx shadcn@latest init`) + components listed in spec. Install Supabase JS + ssr + React Query + react-hook-form + zod + date-fns.
-4. Build Supabase client (lib/supabase/), API client (lib/api.ts), TypeScript types (types/expense.ts), providers (components/providers.tsx). Wire React Query provider into root layout. Build sign-in + sign-up pages with shadcn forms. Build middleware.ts for route protection. Build the (authenticated) route group layout with a placeholder nav. Test locally. **[CHECKPOINT B + cost check]**
-5. Build the nav component (desktop + mobile hamburger variants). Wire sign-out action.
-6. Build expense list page (`/expenses`): desktop table + mobile cards, loading/empty/error states.
-7. Build add expense page (`/expenses/new`): NL input as hero, manual form as collapsible secondary. Wire mutations.
-8. Build edit expense page (`/expenses/[id]/edit`): pre-filled form, save + delete with confirm dialog. **[CHECKPOINT C]**
-9. Final local verification: build clean, type-check clean, lint clean. README.md in frontend/. Push to GitHub.
-10. **[CHECKPOINT D]** Vercel setup (human creates project, sets env vars, deploys, returns URL).
-11. **[CHECKPOINT E]** CORS update on Cloud Run via gcloud (orchestrator runs).
-12. **[CHECKPOINT F + cost check]** Live smoke test on the Vercel URL (human-driven, orchestrator-guided). Capture artifact.
-13. Update CURRENT_STATE.md with deployed Vercel URL and Phase 3c plan. Final success-criteria walkthrough.
+1. Diagnose: read proxy.ts, lib/supabase/client.ts + server.ts, sign-in handler, sign-out action, authenticated layout. State the suspected root cause(s) with evidence. **(no fix yet)**
+2. Install Playwright + browser binaries. Create playwright.config.ts, .env.test.local.example, gitignore entries, test:e2e script. **[CHECKPOINT A: human provides test creds]**
+3. Write e2e/auth.spec.ts with all 9 scenarios. Run against the current (buggy) code to CONFIRM the tests actually catch the reported failures — at least one scenario should fail, reproducing the bug. Report which scenarios fail.
+4. Fix the auth defect(s). Re-run E2E until all 9 pass. Keep changes minimal.
+5. Full verification: E2E green, type-check, lint, build, backend tests. Write the root-cause + fix summary artifact.
+6. **[CHECKPOINT B: human validates on Vercel]** — report instructions for the human to test the live flow. If production-only issues surface, fix and re-verify.
+7. Final success-criteria walkthrough.
