@@ -69,7 +69,7 @@ export function Nav({ email }: NavProps) {
                 {email}
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={handleSignOut}>
+                <DropdownMenuItem onClick={handleSignOut}>
                   Sign out
                 </DropdownMenuItem>
               </DropdownMenuContent>

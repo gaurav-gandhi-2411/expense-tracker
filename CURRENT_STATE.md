@@ -164,14 +164,15 @@ All 9 env vars are required in production (set as Cloud Run env vars via deploy 
 | Phase 2.5 | Done | Validation + cleanup: eval artifacts, pytest warning, CURRENT_STATE refresh |
 | Phase 2.6 | Done | ML quality: brand-keyword prototypes, LLM fallback, anomaly tuning. Categorizer 8/8. |
 | Phase 3a | Done | Production backend: dual-algo JWT auth (HS256+ES256), multi-user isolation, Alembic, Postgres, Cloud Run deploy |
-| Phase 3b | Active | Next.js 15 frontend on Vercel — sign-in/up, expense CRUD, NL input hero |
+| Phase 3b | Active | Next.js 16 frontend on Vercel — sign-in/up, expense CRUD, NL input hero |
+| Phase 3b.1 | Done | Auth hardening + E2E tests — 4 auth bugs fixed, 9 Playwright scenarios green |
 
-## Phase 3b plan (active)
+## Phase 3b plan
 
 **Goal:** User-facing web frontend on Vercel, connected to the live Cloud Run backend. Usable by a friend with a sign-up link.
 
 **Stack:**
-- Next.js 15 (App Router only) + TypeScript strict + Tailwind CSS v4
+- Next.js 16 (App Router only) + TypeScript strict + Tailwind CSS v4
 - shadcn/ui for all UI primitives; lucide-react for icons
 - @supabase/supabase-js + @supabase/ssr for auth (SSR-safe cookies)
 - TanStack Query v5 for server state (object-form API)

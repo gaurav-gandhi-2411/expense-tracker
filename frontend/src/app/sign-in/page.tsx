@@ -49,7 +49,7 @@ export default function SignInPage() {
       toast.error(error.message)
       return
     }
-    window.location.href = '/expenses'
+    window.location.assign('/expenses')
   }
 
   return (
