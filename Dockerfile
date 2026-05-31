@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir \
     psycopg2-binary \
     "pydantic>=2" \
     pydantic-settings \
-    pyjwt \
+    "pyjwt[crypto]" \
     python-dotenv \
     scikit-learn \
     sentence-transformers \
