@@ -19,7 +19,7 @@ def _make_hs256_token(
     secret: str = HS256_SECRET,
     exp_offset: int = 3600,
 ) -> str:
-    payload = {"sub": user_id, "exp": int(time.time()) + exp_offset}
+    payload = {"sub": user_id, "exp": int(time.time()) + exp_offset, "aud": "authenticated"}
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
@@ -86,7 +86,7 @@ def test_valid_es256_token_is_accepted(client: TestClient) -> None:
         private_key = ec.generate_private_key(ec.SECP256R1())
         public_key = private_key.public_key()
 
-        payload = {"sub": TEST_USER_ID, "exp": int(time.time()) + 3600}
+        payload = {"sub": TEST_USER_ID, "exp": int(time.time()) + 3600, "aud": "authenticated"}
         token = jwt.encode(payload, private_key, algorithm="ES256")
 
         mock_signing_key = MagicMock()
@@ -111,7 +111,7 @@ def test_expired_es256_token_returns_401(client: TestClient) -> None:
         private_key = ec.generate_private_key(ec.SECP256R1())
         public_key = private_key.public_key()
 
-        payload = {"sub": TEST_USER_ID, "exp": int(time.time()) - 10}
+        payload = {"sub": TEST_USER_ID, "exp": int(time.time()) - 10, "aud": "authenticated"}
         token = jwt.encode(payload, private_key, algorithm="ES256")
 
         mock_signing_key = MagicMock()

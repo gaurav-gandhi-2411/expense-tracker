@@ -62,6 +62,7 @@ def get_current_user_id(
                 token,
                 secret,
                 algorithms=["HS256"],
+                audience="authenticated",
                 options={"require": ["sub", "exp"]},
             )
         elif alg == "ES256":
@@ -70,6 +71,7 @@ def get_current_user_id(
                 token,
                 signing_key.key,
                 algorithms=["ES256"],
+                audience="authenticated",
                 options={"require": ["sub", "exp"]},
             )
         else:
