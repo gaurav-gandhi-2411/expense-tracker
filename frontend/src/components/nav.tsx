@@ -1,7 +1,6 @@
 'use client'
 
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import { Menu, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -27,8 +26,6 @@ interface NavProps {
 }
 
 export function Nav({ email }: NavProps) {
-  const router = useRouter()
-
   async function handleSignOut(): Promise<void> {
     const supabase = createClient()
     const { error } = await supabase.auth.signOut()
@@ -36,8 +33,7 @@ export function Nav({ email }: NavProps) {
       toast.error('Sign out failed')
       return
     }
-    router.push('/sign-in')
-    router.refresh()
+    window.location.href = '/sign-in'
   }
 
   return (

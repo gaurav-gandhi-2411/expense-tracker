@@ -1,7 +1,6 @@
 'use client'
 
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
@@ -35,7 +34,6 @@ const signInSchema = z.object({
 type SignInValues = z.infer<typeof signInSchema>
 
 export default function SignInPage() {
-  const router = useRouter()
   const form = useForm<SignInValues>({
     resolver: zodResolver(signInSchema),
     defaultValues: { email: '', password: '' },
@@ -51,8 +49,7 @@ export default function SignInPage() {
       toast.error(error.message)
       return
     }
-    router.push('/expenses')
-    router.refresh()
+    window.location.href = '/expenses'
   }
 
   return (
