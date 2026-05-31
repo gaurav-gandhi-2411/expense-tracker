@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 
 import { createClient } from '@/lib/supabase/server'
+import { Nav } from '@/components/nav'
 
 export default async function AuthenticatedLayout({
   children,
@@ -18,11 +19,8 @@ export default async function AuthenticatedLayout({
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="border-b px-4 py-3 flex items-center justify-between">
-        <span className="font-semibold text-lg">Expense Tracker</span>
-        <span className="text-sm text-muted-foreground">{user.email}</span>
-      </header>
-      <main className="flex-1">{children}</main>
+      <Nav email={user.email ?? ''} />
+      <main className="flex-1 container mx-auto px-4 py-6">{children}</main>
     </div>
   )
 }
