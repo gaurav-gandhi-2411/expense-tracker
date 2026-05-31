@@ -1,7 +1,7 @@
 # Current State: expense-tracker (post-Phase 3a)
 
 ## Project goal
-A personal expense tracker as a FastAPI service. Multi-user via Supabase Auth (JWT), per-user data isolation, Alembic migrations, Supabase Postgres in prod / SQLite in local dev. Backend is live on GCP Cloud Run. Phase 3b: frontend.
+A personal expense tracker as a FastAPI service. Multi-user via Supabase Auth (JWT), per-user data isolation, Alembic migrations, Supabase Postgres in prod / SQLite in local dev. Backend is live on GCP Cloud Run. Phase 3b: Next.js 15 frontend on Vercel.
 
 ## Live deployment
 
@@ -9,7 +9,6 @@ A personal expense tracker as a FastAPI service. Multi-user via Supabase Auth (J
 |---|---|
 | Service URL | https://expense-tracker-242393598566.us-central1.run.app |
 | Cloud Run service | expense-tracker |
-| Revision | expense-tracker-00001-98w |
 | Region | us-central1 |
 | GCP project | expense-tracker-498014 |
 | Deploy date | 2026-05-31 |
@@ -22,9 +21,9 @@ expense-tracker/
 ├── pyproject.toml          # deps: fastapi, sqlalchemy 2.x sync, pydantic v2, uvicorn, pytest,
 │                           #       httpx, ruff, mypy, groq, pydantic-settings, python-dotenv,
 │                           #       pytest-mock, sentence-transformers, scikit-learn, prophet, joblib,
-│                           #       pyjwt, psycopg2-binary, alembic
+│                           #       pyjwt[crypto], psycopg2-binary, alembic
 ├── README.md               # install / run / seed / curl + ML features + Production setup
-├── spec.md                 # Phase 3a spec (complete)
+├── spec.md                 # Phase 3b spec (active)
 ├── CURRENT_STATE.md        # this file
 ├── Dockerfile              # CPU-only torch (~200 MB vs 2 GB CUDA), multi-dep build
 ├── .dockerignore           # excludes .venv/, tests/, eval-results/, models/, .env*, .git/
@@ -36,7 +35,7 @@ expense-tracker/
 │   ├── phase2-smoke-20260528.md
 │   ├── phase2-eval-v2-20260528.txt
 │   ├── phase2-smoke-v2-20260528.md
-│   └── phase3a-deploy-smoke-20260531.md   # Phase 3a smoke (PASS)
+│   └── phase3a-deploy-smoke-20260531.md   # Phase 3a smoke (all 4 steps PASS)
 ├── migrations/
 │   ├── env.py
 │   ├── script.py.mako
@@ -45,7 +44,7 @@ expense-tracker/
 │       └── 002_add_user_id.py       # adds user_id column + index
 ├── app/
 │   ├── main.py             # FastAPI app + ALL 16 routes + CORS middleware + logging config
-│   ├── auth.py             # NEW — Supabase JWT validation, get_current_user_id() dep
+│   ├── auth.py             # Supabase JWT validation — dual-algorithm (HS256 + ES256/JWKS)
 │   ├── db.py               # DATABASE_URL env; NullPool for Postgres; SQLite default  [LOAD-BEARING]
 │   ├── models.py           # Expense ORM model + user_id column                       [LOAD-BEARING]
 │   ├── schemas.py          # Pydantic v2 schemas
@@ -99,10 +98,14 @@ All endpoints except `GET /health` require a valid Supabase JWT in the `Authoriz
 
 ## Auth model
 
-- **Provider:** Supabase Auth (JWT, HS256)
-- **Validation:** `app/auth.py` — `get_current_user_id()` FastAPI dependency; verifies signature + expiry using `SUPABASE_JWT_SECRET`; extracts `sub` claim as `user_id` (UUID string)
+- **Provider:** Supabase Auth (JWT)
+- **Algorithms:** Dual — HS256 (legacy/local) and ES256 (Supabase asymmetric, production default)
+- **ES256 path:** `app/auth.py` fetches JWKS from `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` via `PyJWKClient` (cached, 1-hour lifespan). Signing key resolved per-request from JWT header.
+- **HS256 path:** symmetric verify using `SUPABASE_JWT_SECRET` env var (kept for backwards compat with test tokens)
+- **Both algorithms:** require `audience="authenticated"` claim and `["sub", "exp"]` fields
+- **Validation:** `get_current_user_id()` FastAPI dependency; reads `alg` from unverified header to select path; extracts `sub` as `user_id` (UUID string)
 - **Enforcement:** all 15 non-health endpoints inject `get_current_user_id` as a dependency
-- **Data isolation:** every DB query filters `WHERE user_id = :current_user_id`; cross-user access returns 404 (not 403) to avoid leaking existence
+- **Data isolation:** every DB query filters `WHERE user_id = :current_user_id`; cross-user access returns 404 (not 403)
 - **Admin gate:** `POST /ml/train-categorizer` additionally requires `ADMIN_ENABLED=true` env var; returns 404 when false
 
 ## Environment variables
@@ -112,7 +115,7 @@ All 9 env vars are required in production (set as Cloud Run env vars via deploy 
 | Variable | Purpose | Default |
 |---|---|---|
 | `DATABASE_URL` | Supabase session-pooler URL (`postgresql+psycopg2://...`) | `sqlite:///./expense_tracker.db` |
-| `SUPABASE_JWT_SECRET` | Supabase project JWT secret (for token validation) | — |
+| `SUPABASE_JWT_SECRET` | Supabase project JWT secret (HS256 path) | — |
 | `SUPABASE_URL` | Supabase project URL (`https://xxxx.supabase.co`) | — |
 | `GROQ_API_KEY` | Groq API key for LLM features | — |
 | `RUN_MIGRATIONS_ON_STARTUP` | Run `alembic upgrade head` at app startup | `false` |
@@ -127,7 +130,7 @@ All 9 env vars are required in production (set as Cloud Run env vars via deploy 
 - **tests/conftest.py** — in-memory SQLite + per-test rollback + auth dep override. Adding fixtures fine; don't modify the `client` fixture.
 - **app/llm.py** — Groq client. Don't change public surface.
 - **app/config.py** — Settings is `@lru_cache`d. All config flows through it.
-- **app/auth.py** — JWT validation. If `SUPABASE_JWT_SECRET` is wrong, all authenticated endpoints return 401.
+- **app/auth.py** — JWT dual-algorithm validator. If `SUPABASE_JWT_SECRET` is wrong (HS256) or JWKS is unreachable (ES256), authenticated endpoints return 401.
 
 ## Test / lint / types state
 - `pytest -v` → 141/141 pass
@@ -160,32 +163,49 @@ All 9 env vars are required in production (set as Cloud Run env vars via deploy 
 | Phase 2 | Done | Local ML: categorizer + anomaly + forecast + train, 4 endpoints |
 | Phase 2.5 | Done | Validation + cleanup: eval artifacts, pytest warning, CURRENT_STATE refresh |
 | Phase 2.6 | Done | ML quality: brand-keyword prototypes, LLM fallback, anomaly tuning. Categorizer 8/8. |
-| Phase 3a | Done | Production backend: Supabase JWT auth, multi-user isolation, Alembic, Postgres, Cloud Run deploy |
-| Phase 3b | Next | Frontend: React/Next.js on Vercel, sign-in via Supabase Auth UI, expense CRUD, stats charts |
+| Phase 3a | Done | Production backend: dual-algo JWT auth (HS256+ES256), multi-user isolation, Alembic, Postgres, Cloud Run deploy |
+| Phase 3b | Active | Next.js 15 frontend on Vercel — sign-in/up, expense CRUD, NL input hero |
 
-## Phase 3b plan (next)
+## Phase 3b plan (active)
 
-**Goal:** User-facing web frontend connected to the live Cloud Run backend.
+**Goal:** User-facing web frontend on Vercel, connected to the live Cloud Run backend. Usable by a friend with a sign-up link.
 
-**Key decisions to make:**
-- Framework: Next.js (App Router) on Vercel — aligns with spec.md "Production frontends → Vercel"
-- Auth: Supabase Auth JS client — user signs in via Supabase, gets JWT, frontend passes it as `Authorization: Bearer` to the Cloud Run API
-- State: local React state + SWR or React Query for data fetching
-- UI: shadcn/ui + Tailwind
+**Stack:**
+- Next.js 15 (App Router only) + TypeScript strict + Tailwind CSS v4
+- shadcn/ui for all UI primitives; lucide-react for icons
+- @supabase/supabase-js + @supabase/ssr for auth (SSR-safe cookies)
+- TanStack Query v5 for server state (object-form API)
+- react-hook-form + zod for form validation
+- date-fns for date formatting
 
-**Scope (proposed):**
-1. Next.js project in `apps/web/` — monorepo layout
-2. Sign-in / sign-up via Supabase Auth UI component
-3. Expense list, add, edit, delete (calls Cloud Run API)
-4. Stats page: by-month and by-category charts
-5. Deploy to Vercel with `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_API_URL` env vars
+**Frontend lives at:** `frontend/` (repo root sibling to `app/`)
 
-**Out of scope for 3b:** ML/insights UI, admin UI, mobile, i18n.
+**5 pages:**
+1. `/` — root redirect (→ /expenses if authed, → /sign-in if not)
+2. `/sign-in` — email/password login via Supabase Auth
+3. `/sign-up` — registration via Supabase Auth
+4. `/expenses` — list view (desktop table + mobile cards)
+5. `/expenses/new` — NL input hero + manual form secondary
+6. `/expenses/[id]/edit` — pre-filled form with save/delete
+
+**Backend change:** CORS_ALLOWED_ORIGINS env var update only (via `gcloud run services update`), no code changes.
+
+**Out of scope for 3b:** insights view, stats charts, ML demo UIs, component/E2E tests, dark mode, password reset, social auth, pagination, CSV export.
+
+## Phase 3c plan (next after 3b)
+
+- Insights view (monthly + category narratives from /insights/* endpoints)
+- Stats charts: by-month and by-category visualizations (recharts)
+- ML feature demo UIs: categorize tester, anomalies view, forecast view
+- Component tests (Vitest + React Testing Library)
+- E2E tests (Playwright)
+- CI for the frontend (GitHub Actions)
 
 ## Known issues / accepted debt
 - No pagination on list endpoint — fine for personal scale.
 - No LLM response caching — each parse/insight is a fresh Groq call.
 - Groq free-tier rate limits (~30 rpm on 70B) — fine for personal use.
 - `min_anomaly_samples=50`: seed.py (25 rows) falls below threshold; anomaly eval skipped by design. Run seed twice or use unit tests.
-- CORS_ALLOWED_ORIGINS is empty in current Cloud Run deploy — will need updating when frontend URL is known (Phase 3b).
+- CORS_ALLOWED_ORIGINS is empty in current Cloud Run deploy — will be updated at Phase 3b Checkpoint E once Vercel URL is known.
 - Cold start 60–120s: expected on min-instances=0 free tier. Not a bug.
+- Preview Vercel deploys will not be CORS-permitted in 3b (only production URL + localhost hardcoded). Acceptable; revisit in 3c.
