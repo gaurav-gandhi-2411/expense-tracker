@@ -1,9 +1,11 @@
-# Current State: expense-tracker (post-Phase 3a)
+# Current State: expense-tracker (post-Phase 3b.1)
 
 ## Project goal
-A personal expense tracker as a FastAPI service. Multi-user via Supabase Auth (JWT), per-user data isolation, Alembic migrations, Supabase Postgres in prod / SQLite in local dev. Backend is live on GCP Cloud Run. Phase 3b: Next.js 15 frontend on Vercel.
+A personal expense tracker — FastAPI backend, Next.js frontend. Multi-user via Supabase Auth (JWT), per-user data isolation, Alembic migrations, Supabase Postgres in prod / SQLite in local dev. Backend live on GCP Cloud Run; frontend live on Vercel. Phase 4 adds household/group shared-expense flows.
 
 ## Live deployment
+
+**Backend (Cloud Run)**
 
 | Field | Value |
 |---|---|
@@ -15,6 +17,14 @@ A personal expense tracker as a FastAPI service. Multi-user via Supabase Auth (J
 
 First request after idle: 60–120s cold start (sentence-transformers + torch load). Subsequent requests: normal latency.
 
+**Frontend (Vercel)**
+
+| Field | Value |
+|---|---|
+| Production URL | https://expense-tracker-tawny-eight-98.vercel.app |
+| Framework | Next.js 16.2.6 (App Router) |
+| Deploy date | Phase 3b / 2026-06-01 |
+
 ## Directory structure (key files only)
 ```
 expense-tracker/
@@ -23,7 +33,7 @@ expense-tracker/
 │                           #       pytest-mock, sentence-transformers, scikit-learn, prophet, joblib,
 │                           #       pyjwt[crypto], psycopg2-binary, alembic
 ├── README.md               # install / run / seed / curl + ML features + Production setup
-├── spec.md                 # Phase 3b spec (active)
+├── spec.md                 # Phase 3b spec (reference — phase complete)
 ├── CURRENT_STATE.md        # this file
 ├── Dockerfile              # CPU-only torch (~200 MB vs 2 GB CUDA), multi-dep build
 ├── .dockerignore           # excludes .venv/, tests/, eval-results/, models/, .env*, .git/
@@ -31,11 +41,11 @@ expense-tracker/
 ├── .env                    # gitignored — all secrets live here
 ├── .env.example            # committed template with all 9 env vars
 ├── eval-results/           # committed — eval + smoke artifacts
-│   ├── phase2-eval-20260528.txt
 │   ├── phase2-smoke-20260528.md
-│   ├── phase2-eval-v2-20260528.txt
 │   ├── phase2-smoke-v2-20260528.md
-│   └── phase3a-deploy-smoke-20260531.md   # Phase 3a smoke (all 4 steps PASS)
+│   ├── phase3a-deploy-smoke-20260531.md   # Phase 3a smoke (4/4 PASS)
+│   ├── phase3a-auth-e2e-20260531.md       # Phase 3a authenticated E2E (4/4 PASS)
+│   └── phase3b1-auth-fix-20260601.md      # Phase 3b.1 auth fix log + 9/9 E2E PASS
 ├── migrations/
 │   ├── env.py
 │   ├── script.py.mako
@@ -50,7 +60,7 @@ expense-tracker/
 │   ├── schemas.py          # Pydantic v2 schemas
 │   ├── stats.py            # /stats/by-month + /stats/by-category (user-scoped)
 │   ├── config.py           # pydantic-settings Settings — all 9 env vars              [LOAD-BEARING]
-│   ├── llm.py              # Groq client wrapper (unchanged)                           [LOAD-BEARING]
+│   ├── llm.py              # Groq client wrapper                                       [LOAD-BEARING]
 │   ├── parser.py           # parse_expense_text()                                      [Phase 1]
 │   ├── insights.py         # monthly + category narrative (user-scoped)               [Phase 1]
 │   └── ml/
@@ -65,25 +75,76 @@ expense-tracker/
 │   ├── deploy.ps1          # PowerShell deploy script (Windows)
 │   ├── eval_parser.py      # manual parser eval (not in CI)
 │   └── eval_ml.py          # manual ML eval harness (not in CI)
-└── tests/                  # 141/141 pass
-    ├── conftest.py         # in-memory SQLite + auth dep override              [LOAD-BEARING]
-    ├── test_auth.py        # JWT validation: valid/missing/invalid/expired
-    ├── test_isolation.py   # user A cannot access user B data (all 16 endpoints)
-    ├── test_admin_gate.py  # POST /ml/train-categorizer gated behind ADMIN_ENABLED
-    ├── test_migrations.py  # alembic upgrade head produces expected schema
-    ├── test_crud.py
-    ├── test_filters.py
-    ├── test_health.py
-    ├── test_stats.py
-    ├── test_llm.py
-    ├── test_llm_endpoints.py
-    ├── test_insights.py
-    ├── test_parser.py
-    ├── test_embeddings.py
-    ├── test_categorizer.py
-    ├── test_anomaly.py
-    ├── test_forecast.py
-    └── test_ml_endpoints.py
+├── tests/                  # 143/143 pass
+│   ├── conftest.py         # in-memory SQLite + auth dep override              [LOAD-BEARING]
+│   ├── test_auth.py
+│   ├── test_isolation.py
+│   ├── test_admin_gate.py
+│   ├── test_migrations.py
+│   ├── test_crud.py
+│   ├── test_filters.py
+│   ├── test_health.py
+│   ├── test_stats.py
+│   ├── test_llm.py
+│   ├── test_llm_endpoints.py
+│   ├── test_insights.py
+│   ├── test_parser.py
+│   ├── test_embeddings.py
+│   ├── test_categorizer.py
+│   ├── test_anomaly.py
+│   ├── test_forecast.py
+│   └── test_ml_endpoints.py
+└── frontend/               # Next.js 16 — deployed to Vercel
+    ├── package.json        # next 16.2.6, react 19, tailwindcss v4, @base-ui/react,
+    │                       # @supabase/ssr, @tanstack/react-query v5, react-hook-form, zod
+    ├── next.config.ts
+    ├── proxy.ts            # Supabase SSR cookie refresh + auth redirects (NOT middleware.ts)
+    ├── playwright.config.ts
+    ├── tsconfig.json
+    ├── components.json     # shadcn/ui config (base-ui adapter)
+    ├── .env.local          # gitignored — NEXT_PUBLIC_* vars for local dev
+    ├── .env.local.example
+    ├── .env.test.local     # gitignored — TEST_USER_EMAIL + TEST_USER_PASSWORD for Playwright
+    ├── .env.test.local.example
+    ├── e2e/
+    │   └── auth.spec.ts    # 9 Playwright auth scenarios (all PASS on Chromium)
+    ├── public/
+    └── src/
+        ├── app/
+        │   ├── layout.tsx                          # root layout + providers
+        │   ├── page.tsx                            # root redirect (→ /expenses or /sign-in)
+        │   ├── globals.css
+        │   ├── sign-in/
+        │   │   ├── layout.tsx                      # server guard: authenticated → /expenses
+        │   │   └── page.tsx
+        │   ├── sign-up/
+        │   │   └── page.tsx
+        │   └── (authenticated)/                    # route group — auth-gated
+        │       ├── layout.tsx                      # server guard: unauthenticated → /sign-in
+        │       ├── expenses/
+        │       │   ├── page.tsx                    # list view (desktop table + mobile cards)
+        │       │   ├── new/page.tsx                # NL input hero + manual form
+        │       │   └── [id]/
+        │       │       ├── edit/page.tsx
+        │       │       └── edit-client.tsx         # pre-filled form with save/delete
+        ├── components/
+        │   ├── nav.tsx
+        │   ├── expense-card-mobile.tsx
+        │   ├── expense-form.tsx
+        │   ├── nl-input.tsx
+        │   ├── providers.tsx                       # QueryClientProvider + Toaster
+        │   └── ui/                                 # shadcn primitives (button, card, dialog, …)
+        ├── lib/
+        │   ├── api.ts                              # fetch wrapper calling Cloud Run via proxy
+        │   ├── utils.ts
+        │   ├── hooks/
+        │   │   ├── use-expenses.ts                 # TanStack Query hooks
+        │   │   └── use-user.ts
+        │   └── supabase/
+        │       ├── client.ts                       # browser Supabase client
+        │       └── server.ts                       # server Supabase client (cookie-based)
+        └── types/
+            └── expense.ts
 ```
 
 ## Endpoints (16 total)
@@ -108,9 +169,38 @@ All endpoints except `GET /health` require a valid Supabase JWT in the `Authoriz
 - **Data isolation:** every DB query filters `WHERE user_id = :current_user_id`; cross-user access returns 404 (not 403)
 - **Admin gate:** `POST /ml/train-categorizer` additionally requires `ADMIN_ENABLED=true` env var; returns 404 when false
 
-## Environment variables
+## Supabase config
 
-All 9 env vars are required in production (set as Cloud Run env vars via deploy script):
+| Setting | Value |
+|---|---|
+| Email confirmation | OFF (Option A — users land in app immediately after sign-up) |
+| Site URL | `https://expense-tracker-tawny-eight-98.vercel.app` |
+| CORS_ALLOWED_ORIGINS (Cloud Run) | Vercel prod URL + `http://localhost:3000` |
+
+## Frontend stack
+
+- **Next.js 16.2.6** — App Router only; no Pages Router
+- **proxy.ts** (not `middleware.ts`) — handles Supabase SSR cookie refresh and auth redirects. Redirects must propagate `supabaseResponse.cookies` or token rotation silently breaks sessions.
+- **TypeScript strict**, Tailwind CSS v4
+- **shadcn/ui** built on **@base-ui/react** (not Radix UI). `DropdownMenuItem` uses `onClick`, not `onSelect` (Radix convention — silent no-op on base-ui).
+- **TanStack Query v5** (object-form API — `queryKey`/`queryFn` in a single object arg)
+- **@supabase/ssr** for SSR-safe cookie-based auth; `createServerClient` in server components, `createBrowserClient` in client components
+- **react-hook-form + zod** for form validation
+- **Auth transitions use `window.location.href`** (full HTTP navigation through proxy.ts), not `router.push` — ensures cookie refresh pipeline runs on the next request
+
+## Vercel environment variables
+
+All three required at build time and runtime:
+
+| Variable | Purpose |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key |
+| `NEXT_PUBLIC_API_BASE_URL` | Cloud Run service URL (no trailing slash) |
+
+## Backend environment variables
+
+All 9 env vars required in production (set as Cloud Run env vars):
 
 | Variable | Purpose | Default |
 |---|---|---|
@@ -131,12 +221,19 @@ All 9 env vars are required in production (set as Cloud Run env vars via deploy 
 - **app/llm.py** — Groq client. Don't change public surface.
 - **app/config.py** — Settings is `@lru_cache`d. All config flows through it.
 - **app/auth.py** — JWT dual-algorithm validator. If `SUPABASE_JWT_SECRET` is wrong (HS256) or JWKS is unreachable (ES256), authenticated endpoints return 401.
+- **frontend/proxy.ts** — Supabase SSR middleware equivalent. Both redirect branches must copy `supabaseResponse.cookies` onto the redirect response or token rotation silently breaks sessions.
 
 ## Test / lint / types state
-- `pytest -v` → 141/141 pass
+
+**Backend**
+- `pytest -v` → 143/143 pass
 - `ruff check .` → clean
 - `mypy app` → clean (strict=false)
-- Coverage: per-feature test presence (no threshold configured)
+
+**Frontend**
+- `npx playwright test` (auth flow) → 9/9 pass (Chromium, local)
+- `next build` → clean
+- TypeScript: clean
 
 ## Alembic migrations
 - `001_baseline_schema.py` — creates `expenses` table (for fresh prod DB)
@@ -164,49 +261,21 @@ All 9 env vars are required in production (set as Cloud Run env vars via deploy 
 | Phase 2.5 | Done | Validation + cleanup: eval artifacts, pytest warning, CURRENT_STATE refresh |
 | Phase 2.6 | Done | ML quality: brand-keyword prototypes, LLM fallback, anomaly tuning. Categorizer 8/8. |
 | Phase 3a | Done | Production backend: dual-algo JWT auth (HS256+ES256), multi-user isolation, Alembic, Postgres, Cloud Run deploy |
-| Phase 3b | Active | Next.js 16 frontend on Vercel — sign-in/up, expense CRUD, NL input hero |
-| Phase 3b.1 | Done | Auth hardening + E2E tests — 4 auth bugs fixed, 9 Playwright scenarios green |
-
-## Phase 3b plan
-
-**Goal:** User-facing web frontend on Vercel, connected to the live Cloud Run backend. Usable by a friend with a sign-up link.
-
-**Stack:**
-- Next.js 16 (App Router only) + TypeScript strict + Tailwind CSS v4
-- shadcn/ui for all UI primitives; lucide-react for icons
-- @supabase/supabase-js + @supabase/ssr for auth (SSR-safe cookies)
-- TanStack Query v5 for server state (object-form API)
-- react-hook-form + zod for form validation
-- date-fns for date formatting
-
-**Frontend lives at:** `frontend/` (repo root sibling to `app/`)
-
-**5 pages:**
-1. `/` — root redirect (→ /expenses if authed, → /sign-in if not)
-2. `/sign-in` — email/password login via Supabase Auth
-3. `/sign-up` — registration via Supabase Auth
-4. `/expenses` — list view (desktop table + mobile cards)
-5. `/expenses/new` — NL input hero + manual form secondary
-6. `/expenses/[id]/edit` — pre-filled form with save/delete
-
-**Backend change:** CORS_ALLOWED_ORIGINS env var update only (via `gcloud run services update`), no code changes.
-
-**Out of scope for 3b:** insights view, stats charts, ML demo UIs, component/E2E tests, dark mode, password reset, social auth, pagination, CSV export.
-
-## Phase 3c plan (next after 3b)
-
-- Insights view (monthly + category narratives from /insights/* endpoints)
-- Stats charts: by-month and by-category visualizations (recharts)
-- ML feature demo UIs: categorize tester, anomalies view, forecast view
-- Component tests (Vitest + React Testing Library)
-- E2E tests (Playwright)
-- CI for the frontend (GitHub Actions)
+| Phase 3b | Done | Next.js 16 frontend on Vercel — sign-in/up, expense CRUD, NL input hero, mobile responsive |
+| Phase 3b.1 | Done | Auth hardening: 4 bugs fixed (onSelect→onClick, proxy.ts cookie propagation, sign-in server guard, window.location nav). 9 Playwright E2E scenarios green. |
+| Phase 4a | Planned | Household foundation — household entity, member roles, invite model |
+| Phase 4b | Planned | Shared + recurring + split engine |
+| Phase 4c | Planned | Balances + UPI settle-up |
+| Phase 4d | Planned | AI layer |
+| Phase 4e | Planned | Group-first frontend |
+| Phase 4f | Planned | PWA |
+| Phase 4g | Planned | Join-by-link |
 
 ## Known issues / accepted debt
 - No pagination on list endpoint — fine for personal scale.
 - No LLM response caching — each parse/insight is a fresh Groq call.
 - Groq free-tier rate limits (~30 rpm on 70B) — fine for personal use.
 - `min_anomaly_samples=50`: seed.py (25 rows) falls below threshold; anomaly eval skipped by design. Run seed twice or use unit tests.
-- CORS_ALLOWED_ORIGINS is empty in current Cloud Run deploy — will be updated at Phase 3b Checkpoint E once Vercel URL is known.
 - Cold start 60–120s: expected on min-instances=0 free tier. Not a bug.
-- Preview Vercel deploys will not be CORS-permitted in 3b (only production URL + localhost hardcoded). Acceptable; revisit in 3c.
+- Preview Vercel deploys are not CORS-permitted (only production URL + localhost:3000). Acceptable; revisit in Phase 4.
+- Playwright E2E runs locally only — no CI integration yet. Will be addressed in a future phase.
