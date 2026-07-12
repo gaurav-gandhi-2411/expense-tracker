@@ -31,6 +31,11 @@ jobs:
         run: mypy app
 
       - name: Pytest
+        env:
+          # Settings.groq_api_key is a required field validated at import time (app/config.py).
+          # Never used for a real call -- all Groq calls are mocked in tests/test_llm.py, same
+          # placeholder convention as that fixture's own "test-key" literal.
+          GROQ_API_KEY: test-key
         run: pytest
 
   frontend:
