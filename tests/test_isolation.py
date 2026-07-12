@@ -132,12 +132,27 @@ def test_stats_by_category_excludes_other_user(client: TestClient, db_session: S
 # ---------------------------------------------------------------------------
 
 
-def test_parse_expense_requires_no_db_access(client: TestClient) -> None:
+def test_parse_expense_requires_no_db_access(
+    client: TestClient, mocker: pytest.MonkeyPatch
+) -> None:
     # parse endpoint doesn't read DB; auth is already verified by test_auth.py.
     # Here we just confirm the endpoint is reachable with a valid (overridden) auth.
+    # Mock the LLM call -- this test is about auth/DB-isolation, not LLM behavior, and an
+    # unmocked call here was silently hitting the real Groq API (masked locally by a real
+    # GROQ_API_KEY in .env; fails loudly in CI with no such key, as it should -- CI must
+    # never make live LLM calls, see llm-app-production skill).
+    mocker.patch(
+        "app.main.parse_expense_text",
+        return_value=ParsedExpense(
+            amount=100.0,
+            category="food",
+            description="lunch",
+            occurred_at=date(2026, 1, 1),
+            confidence=0.9,
+        ),
+    )
     resp = client.post("/expenses/parse", json={"text": "lunch 100"})
-    # 200 or 503 (LLM unavailable in test env) — both mean auth passed
-    assert resp.status_code in (200, 503)
+    assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------

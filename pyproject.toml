@@ -28,6 +28,9 @@ dev = [
     "ruff",
 ]
 
+[tool.setuptools.packages.find]
+include = ["app*"]
+
 [tool.ruff]
 line-length = 100
 
