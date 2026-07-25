@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "project": "expense-tracker",
+  "docs": "https://github.com/gaurav-gandhi-2411/gg-portfolio#autonomous-metric-refresh",
+  "metrics": [
+    {
+      "id": "expense-tracker:tests",
+      "label": "Test suite",
+      "value": "143/143 passing",
+      "source_file": "CURRENT_STATE.md",
+      "source_line": 229,
+      "commit_sha": "0908205094bc2384ab1a7b2a46e9024e120d369f",
+      "measured_at": "2026-06-01"
+    }
+  ]
+}
