@@ -7,8 +7,10 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.db import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +30,18 @@ def _get_jwks_client() -> PyJWKClient:
     return _jwks_client
 
 
+def _ensure_profile(db: Session, user_id: str) -> None:
+    """Record first use — see app.models.AppProfile for why."""
+    from app.models import AppProfile  # noqa: PLC0415 — avoids a module import cycle
+
+    if db.get(AppProfile, user_id) is None:
+        db.add(AppProfile(user_id=user_id))
+        db.commit()
+
+
 def get_current_user_id(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    db: Annotated[Session, Depends(get_db)],
 ) -> str:
     """Validate Supabase JWT (HS256 or ES256) and return the user_id (sub claim).
 
@@ -96,4 +108,5 @@ def get_current_user_id(
         ) from exc
 
     user_id: str = payload["sub"]
+    _ensure_profile(db, user_id)
     return user_id
