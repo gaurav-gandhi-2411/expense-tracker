@@ -15,8 +15,10 @@ class Settings(BaseSettings):
     )
 
     groq_api_key: str
-    llm_model: str = "llama-3.3-70b-versatile"
-    llm_fallback_model: str = "llama-3.1-8b-instant"
+    # Both deprecated by Groq 2026-08-16 (console.groq.com/docs/deprecations);
+    # replaced with their documented same-tier successors.
+    llm_model: str = "openai/gpt-oss-120b"
+    llm_fallback_model: str = "openai/gpt-oss-20b"
 
     embedding_model: str = "all-MiniLM-L6-v2"
     min_train_per_category: int = 30
